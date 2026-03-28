@@ -51,6 +51,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       jobId: job.id,
+      apiJobId: job.apiJobId,
       status: job.status,
       progress: job.progress,
       demoMode,

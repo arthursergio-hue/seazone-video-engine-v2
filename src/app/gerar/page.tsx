@@ -45,6 +45,7 @@ export default function GerarPage() {
   const [logs, setLogs] = useState<VideoLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [demoMode, setDemoMode] = useState(false);
+  const [apiJobId, setApiJobId] = useState<string | null>(null);
 
   const constructionHasImages = getAllImagesFromCategory(categoryImages.construcao).length > 0;
   const facadeHasImages = getAllImagesFromCategory(categoryImages.fachada).length > 0;
@@ -103,9 +104,11 @@ export default function GerarPage() {
     setSelectedImage(bestImage);
   }, [videoType, project, categoryImages, isConstructionFromFacade, loading]);
 
-  const pollStatus = useCallback(async (id: string) => {
+  const pollStatus = useCallback(async (id: string, apiId?: string) => {
     try {
-      const res = await fetch(`/api/video/status?jobId=${id}`);
+      let url = `/api/video/status?jobId=${id}`;
+      if (apiId) url += `&apiJobId=${encodeURIComponent(apiId)}`;
+      const res = await fetch(url);
       const data = await res.json();
 
       setStatus(data.status);
@@ -118,10 +121,10 @@ export default function GerarPage() {
       } else if (data.status === 'failed') {
         setGenerating(false);
       } else {
-        setTimeout(() => pollStatus(id), 3000);
+        setTimeout(() => pollStatus(id, apiId), 3000);
       }
     } catch {
-      setTimeout(() => pollStatus(id), 5000);
+      setTimeout(() => pollStatus(id, apiId), 5000);
     }
   }, []);
 
@@ -171,12 +174,14 @@ export default function GerarPage() {
         setDemoMode(true);
       }
 
+      const receivedApiJobId = data.apiJobId || null;
+      setApiJobId(receivedApiJobId);
       setJobId(data.jobId);
       setStatus(data.status);
       setProgress(data.progress);
       setLogs(data.logs || []);
 
-      pollStatus(data.jobId);
+      pollStatus(data.jobId, receivedApiJobId);
     } catch {
       setStatus('failed');
       setGenerating(false);
