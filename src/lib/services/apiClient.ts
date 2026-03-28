@@ -1,90 +1,112 @@
-const KLING_API_BASE = 'https://api.klingai.com/v1';
+import { fal } from '@fal-ai/client';
 
-function getApiKey(): string | null {
+// ========================================
+// API Configuration
+// ========================================
+// Priority: FAL_KEY > KLING_API_KEY > demo mode
+
+function getFalKey(): string | null {
+  return process.env.FAL_KEY || null;
+}
+
+function getKlingKey(): string | null {
   return process.env.KLING_API_KEY || null;
 }
 
-function getHeaders(): Record<string, string> {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    throw new Error('KLING_API_KEY is not configured');
+export function isApiConfigured(): boolean {
+  return !!(getFalKey() || getKlingKey());
+}
+
+export function getActiveProvider(): 'fal' | 'kling' | 'demo' {
+  if (getFalKey()) return 'fal';
+  if (getKlingKey()) return 'kling';
+  return 'demo';
+}
+
+// ========================================
+// FAL.ai Integration (Kling v2 model)
+// ========================================
+
+async function falGenerateVideo(params: {
+  prompt: string;
+  imageUrl: string;
+  aspectRatio: string;
+  duration: number;
+}): Promise<{ taskId: string }> {
+  const falKey = getFalKey();
+  if (!falKey) throw new Error('FAL_KEY not configured');
+
+  fal.config({ credentials: falKey });
+
+  // Use fal's Kling video model (image-to-video)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: any = await (fal as any).subscribe('fal-ai/kling-video/v2/master/image-to-video', {
+    input: {
+      prompt: params.prompt,
+      image_url: params.imageUrl,
+      duration: String(Math.min(params.duration, 10)),
+    },
+    logs: true,
+  });
+
+  const videoUrl = result?.data?.video?.url
+    || result?.video?.url
+    || result?.data?.output?.video?.url
+    || '';
+
+  // FAL subscribe waits for completion, so return the result directly
+  // We store the video URL as the taskId for the status check to pick up
+  return { taskId: `fal_completed_${Date.now()}_${encodeURIComponent(videoUrl)}` };
+}
+
+async function falCheckStatus(taskId: string): Promise<{
+  status: string;
+  progress?: number;
+  resultUrl?: string;
+  error?: string;
+}> {
+  // FAL subscribe already waits for completion
+  if (taskId.startsWith('fal_completed_')) {
+    const parts = taskId.split('_');
+    // Everything after "fal_completed_{timestamp}_" is the encoded URL
+    const urlPart = taskId.substring(taskId.indexOf('_', taskId.indexOf('_', 4) + 1) + 1);
+    const videoUrl = decodeURIComponent(urlPart);
+
+    if (videoUrl && videoUrl.startsWith('http')) {
+      return { status: 'completed', progress: 100, resultUrl: videoUrl };
+    }
+    return { status: 'failed', error: 'No video URL in FAL response' };
   }
+
+  return { status: 'processing', progress: 70 };
+}
+
+// ========================================
+// Kling Direct API Integration
+// ========================================
+const KLING_API_BASE = 'https://api.klingai.com/v1';
+
+function getKlingHeaders(): Record<string, string> {
+  const apiKey = getKlingKey();
+  if (!apiKey) throw new Error('KLING_API_KEY not configured');
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
   };
 }
 
-export function isApiConfigured(): boolean {
-  const key = getApiKey();
-  return !!key && key.length > 0;
-}
-
-// Demo mode: simulates API responses when no API key is configured
-async function simulateGeneration(params: {
+async function klingDirectGenerate(params: {
   prompt: string;
   imageUrl: string;
   aspectRatio: string;
   duration: number;
 }): Promise<{ taskId: string }> {
-  // Simulate network delay
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  const taskId = `demo_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  return { taskId };
-}
-
-async function simulateStatusCheck(taskId: string): Promise<{
-  status: string;
-  progress?: number;
-  resultUrl?: string;
-  error?: string;
-}> {
-  // Demo tasks "complete" after creation
-  // In a real scenario, this would poll an actual API
-  const createdAt = parseInt(taskId.split('_')[1] || '0');
-  const elapsed = Date.now() - createdAt;
-
-  if (elapsed < 3000) {
-    return { status: 'processing', progress: 30 };
-  } else if (elapsed < 6000) {
-    return { status: 'processing', progress: 60 };
-  } else if (elapsed < 9000) {
-    return { status: 'processing', progress: 90 };
-  } else {
-    return {
-      status: 'completed',
-      progress: 100,
-      // Demo video URL - a sample video for testing
-      resultUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
-    };
-  }
-}
-
-export async function klingGenerateVideo(params: {
-  prompt: string;
-  imageUrl: string;
-  aspectRatio: string;
-  duration: number;
-}): Promise<{ taskId: string }> {
-  if (!isApiConfigured()) {
-    console.log('[DEMO MODE] Simulating video generation — no KLING_API_KEY configured');
-    return simulateGeneration(params);
-  }
-
-  // Don't send full base64 to Kling if image is a data URL — it needs a hosted URL
-  let imageParam = params.imageUrl;
-  if (imageParam.startsWith('data:')) {
-    // For now, Kling needs a public URL. In production, upload to S3/Cloudinary first.
-    // In demo mode this is handled above.
-    console.warn('[API] Image is base64 — Kling requires a public URL. Sending as-is.');
-  }
-
   const response = await fetch(`${KLING_API_BASE}/videos/image2video`, {
     method: 'POST',
-    headers: getHeaders(),
+    headers: getKlingHeaders(),
     body: JSON.stringify({
       model_name: 'kling-v1',
-      image: imageParam,
+      image: params.imageUrl,
       prompt: params.prompt,
       negative_prompt: 'blurry, distorted, low quality, watermark, text overlay, excessive glow, bright lens flare, hard cuts, artificial effects',
       cfg_scale: 0.5,
@@ -103,24 +125,15 @@ export async function klingGenerateVideo(params: {
   return { taskId: data.data?.task_id || data.task_id };
 }
 
-export async function klingCheckStatus(taskId: string): Promise<{
+async function klingDirectCheckStatus(taskId: string): Promise<{
   status: string;
   progress?: number;
   resultUrl?: string;
   error?: string;
 }> {
-  // Demo mode
-  if (taskId.startsWith('demo_')) {
-    return simulateStatusCheck(taskId);
-  }
-
-  if (!isApiConfigured()) {
-    return { status: 'failed', error: 'KLING_API_KEY not configured' };
-  }
-
   const response = await fetch(`${KLING_API_BASE}/videos/image2video/${taskId}`, {
     method: 'GET',
-    headers: getHeaders(),
+    headers: getKlingHeaders(),
   });
 
   if (!response.ok) {
@@ -137,8 +150,69 @@ export async function klingCheckStatus(taskId: string): Promise<{
 
   return {
     status,
-    progress: task?.task_status_msg ? undefined : undefined,
     resultUrl: task?.task_result?.videos?.[0]?.url,
     error: task?.task_status === 'failed' ? task?.task_status_msg : undefined,
   };
+}
+
+// ========================================
+// Demo Mode
+// ========================================
+
+async function demoGenerate(): Promise<{ taskId: string }> {
+  await new Promise(resolve => setTimeout(resolve, 500));
+  return { taskId: `demo_${Date.now()}` };
+}
+
+function demoCheckStatus(taskId: string): {
+  status: string;
+  progress?: number;
+  resultUrl?: string;
+  error?: string;
+} {
+  const createdAt = parseInt(taskId.split('_')[1] || '0');
+  const elapsed = Date.now() - createdAt;
+
+  if (elapsed < 4000) return { status: 'processing', progress: 30 };
+  if (elapsed < 7000) return { status: 'processing', progress: 60 };
+  if (elapsed < 10000) return { status: 'processing', progress: 90 };
+  return {
+    status: 'completed',
+    progress: 100,
+    resultUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
+  };
+}
+
+// ========================================
+// Unified API (auto-routes to correct provider)
+// ========================================
+
+export async function klingGenerateVideo(params: {
+  prompt: string;
+  imageUrl: string;
+  aspectRatio: string;
+  duration: number;
+}): Promise<{ taskId: string }> {
+  const provider = getActiveProvider();
+  console.log(`[VideoGen] Provider: ${provider}`);
+
+  switch (provider) {
+    case 'fal':
+      return falGenerateVideo(params);
+    case 'kling':
+      return klingDirectGenerate(params);
+    default:
+      return demoGenerate();
+  }
+}
+
+export async function klingCheckStatus(taskId: string): Promise<{
+  status: string;
+  progress?: number;
+  resultUrl?: string;
+  error?: string;
+}> {
+  if (taskId.startsWith('demo_')) return demoCheckStatus(taskId);
+  if (taskId.startsWith('fal_')) return falCheckStatus(taskId);
+  return klingDirectCheckStatus(taskId);
 }

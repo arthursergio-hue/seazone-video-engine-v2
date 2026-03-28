@@ -141,10 +141,19 @@ export default function GerarPage() {
       ? 'fachada'
       : (videoType === 'unidade' ? 'interior' : videoType);
 
-    // Send image reference (not full base64) — the server handles demo mode
-    // For production with real API, we'd upload to S3 first and send the URL
-    const imageRef = `indexeddb://${selectedImage.id}`;
-    const refCount = categoryImages[relevantCategory]?.referenceImages.length || 0;
+    // Resolve actual image data from IndexedDB for the API
+    let resolvedImageUrl = imageDataMap[selectedImage.id] || '';
+    if (!resolvedImageUrl || !resolvedImageUrl.startsWith('data:')) {
+      const data = await getImageData(selectedImage.id);
+      if (data) resolvedImageUrl = data;
+    }
+
+    if (!resolvedImageUrl) {
+      setStatus('failed');
+      setLogs([{ timestamp: new Date().toISOString(), message: 'Erro: imagem não encontrada. Faça upload novamente.', progress: 0 }]);
+      setGenerating(false);
+      return;
+    }
 
     try {
       const res = await fetch('/api/video/generate', {
@@ -152,8 +161,7 @@ export default function GerarPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId: project.id,
-          imageUrl: imageRef,
-          referenceImageUrls: refCount > 0 ? [`ref_count:${refCount}`] : [],
+          imageUrl: resolvedImageUrl,
           imageCategory: isConstructionFromFacade ? 'fachada' : relevantCategory,
           videoType,
           aspectRatio,
