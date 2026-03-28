@@ -20,8 +20,10 @@ function generateId(): string {
 export async function createVideoJob(params: {
   projectId: string;
   imageUrl: string;
+  referenceImageUrls?: string[];
   videoType: VideoType;
   aspectRatio: AspectRatio;
+  constructionFromFacade?: boolean;
 }): Promise<VideoJob> {
   const id = generateId();
   const prompt = generatePrompt(params.videoType);
@@ -35,11 +37,15 @@ export async function createVideoJob(params: {
     progress: 0,
     prompt,
     imageUrl: params.imageUrl,
+    referenceImageUrls: params.referenceImageUrls,
+    constructionFromFacade: params.constructionFromFacade,
     logs: [createLog('Job criado', 0)],
     parameters: {
       videoType: params.videoType,
       aspectRatio: params.aspectRatio,
       duration: String(prompt.duration),
+      constructionFromFacade: String(!!params.constructionFromFacade),
+      referenceImages: String(params.referenceImageUrls?.length || 0),
     },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -56,8 +62,16 @@ export async function startVideoGeneration(jobId: string): Promise<VideoJob> {
   // Step 1: Prepare
   updateJob(job, 'preparing', 10, 'Preparando imagens...');
 
+  if (job.constructionFromFacade) {
+    updateJob(job, 'preparing', 15, 'Modo: Construção a partir da fachada — simulação visual');
+  }
+
+  if (job.referenceImageUrls && job.referenceImageUrls.length > 0) {
+    updateJob(job, 'preparing', 20, `${job.referenceImageUrls.length} imagem(ns) de referência disponíveis`);
+  }
+
   // Step 2: Generate prompt
-  updateJob(job, 'generating_prompt', 30, 'Gerando prompt otimizado...');
+  updateJob(job, 'generating_prompt', 30, 'Gerando prompt otimizado com preset oficial...');
   const promptText = formatPromptForApi(job.prompt);
 
   // Step 3: Send to API

@@ -3,28 +3,60 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import ImageUploader from '@/components/ImageUploader';
-import { UploadedImage, VideoProject } from '@/lib/types';
+import {
+  ImageCategory,
+  CategoryImages,
+  ProjectImages,
+  VideoProject,
+  createEmptyProjectImages,
+  getTotalImageCount,
+  getAllImagesFromCategory,
+} from '@/lib/types';
 
 export default function UploadPage() {
   const router = useRouter();
   const [project, setProject] = useState<VideoProject | null>(null);
-  const [images, setImages] = useState<UploadedImage[]>([]);
+  const [categoryImages, setCategoryImages] = useState<ProjectImages>(createEmptyProjectImages());
 
   useEffect(() => {
     const stored = localStorage.getItem('currentProject');
     if (stored) {
-      const p = JSON.parse(stored);
+      const p = JSON.parse(stored) as VideoProject;
       setProject(p);
-      setImages(p.images || []);
+
+      // Migrate: if project has categoryImages, use them; otherwise rebuild from flat images array
+      if (p.categoryImages) {
+        setCategoryImages(p.categoryImages);
+      } else if (p.images && p.images.length > 0) {
+        const migrated = createEmptyProjectImages();
+        for (const img of p.images) {
+          const cat = img.category;
+          if (!migrated[cat].primaryImage) {
+            migrated[cat].primaryImage = { ...img, isPrimary: true };
+          } else {
+            migrated[cat].referenceImages.push(img);
+          }
+        }
+        setCategoryImages(migrated);
+      }
     }
   }, []);
 
-  function handleUpload(image: UploadedImage) {
-    const updated = [...images, image];
-    setImages(updated);
+  function handleImagesChange(category: ImageCategory, images: CategoryImages) {
+    const updated = { ...categoryImages, [category]: images };
+    setCategoryImages(updated);
 
     if (project) {
-      const updatedProject = { ...project, images: updated };
+      // Rebuild flat images array for backward compatibility
+      const allImages = (Object.keys(updated) as ImageCategory[]).flatMap(
+        (key) => getAllImagesFromCategory(updated[key])
+      );
+      const updatedProject: VideoProject = {
+        ...project,
+        images: allImages,
+        categoryImages: updated,
+      };
+      setProject(updatedProject);
       localStorage.setItem('currentProject', JSON.stringify(updatedProject));
     }
   }
@@ -47,8 +79,15 @@ export default function UploadPage() {
     );
   }
 
+  const totalCount = getTotalImageCount(categoryImages);
+
+  // Check if construction has no images but facade does
+  const hasConstructionImages = getAllImagesFromCategory(categoryImages.construcao).length > 0;
+  const hasFacadeImages = getAllImagesFromCategory(categoryImages.fachada).length > 0;
+  const willUseConstructionFromFacade = !hasConstructionImages && hasFacadeImages;
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-white">Upload de Imagens</h1>
         <p className="text-gray-400 mt-1">
@@ -56,24 +95,38 @@ export default function UploadPage() {
         </p>
       </div>
 
-      <ImageUploader onUpload={handleUpload} />
+      <ImageUploader
+        categoryImages={categoryImages}
+        onImagesChange={handleImagesChange}
+      />
 
-      {images.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="text-white font-medium">Imagens enviadas ({images.length})</h3>
-          <div className="grid grid-cols-3 gap-3">
-            {images.map((img) => (
-              <div key={img.id} className="bg-gray-900 rounded-lg overflow-hidden">
-                <img src={img.url} alt={img.filename} className="w-full h-32 object-cover" />
-                <div className="p-2">
-                  <span className="text-xs text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded">
-                    {img.category}
-                  </span>
-                  <p className="text-gray-500 text-xs mt-1 truncate">{img.filename}</p>
+      {/* Summary */}
+      {totalCount > 0 && (
+        <div className="bg-gray-900 rounded-lg p-4 space-y-3">
+          <h3 className="text-white font-medium">Resumo ({totalCount} imagens total)</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {(Object.keys(categoryImages) as ImageCategory[]).map((cat) => {
+              const count = getAllImagesFromCategory(categoryImages[cat]).length;
+              return (
+                <div key={cat} className="bg-gray-800 rounded p-2 text-center">
+                  <p className="text-white font-medium text-sm capitalize">{cat}</p>
+                  <p className={`text-lg font-bold ${count > 0 ? 'text-green-400' : 'text-gray-600'}`}>
+                    {count}
+                  </p>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
+
+          {willUseConstructionFromFacade && (
+            <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 text-sm">
+              <p className="text-yellow-400 font-medium">Modo: Construção a partir da Fachada</p>
+              <p className="text-yellow-500/80 mt-1">
+                Nenhuma imagem de construção foi enviada. O sistema usará a fachada para gerar
+                uma simulação visual da evolução construtiva do prédio.
+              </p>
+            </div>
+          )}
 
           <button
             onClick={handleContinue}

@@ -14,19 +14,28 @@ export type VideoStatus =
   | 'completed'
   | 'failed';
 
-export interface VideoProject {
-  id: string;
-  name: string;
-  description?: string;
-  images: UploadedImage[];
-  createdAt: string;
-}
-
 export interface UploadedImage {
   id: string;
   url: string;
   category: ImageCategory;
   filename: string;
+  isPrimary?: boolean;
+}
+
+export interface CategoryImages {
+  primaryImage: UploadedImage | null;
+  referenceImages: UploadedImage[];
+}
+
+export type ProjectImages = Record<ImageCategory, CategoryImages>;
+
+export interface VideoProject {
+  id: string;
+  name: string;
+  description?: string;
+  images: UploadedImage[];
+  categoryImages: ProjectImages;
+  createdAt: string;
 }
 
 export interface VideoPrompt {
@@ -48,6 +57,8 @@ export interface VideoJob {
   progress: number;
   prompt: VideoPrompt;
   imageUrl: string;
+  referenceImageUrls?: string[];
+  constructionFromFacade?: boolean;
   resultUrl?: string;
   apiJobId?: string;
   logs: VideoLog[];
@@ -65,9 +76,11 @@ export interface VideoLog {
 export interface GenerationRequest {
   projectId: string;
   imageUrl: string;
+  referenceImageUrls?: string[];
   imageCategory: ImageCategory;
   videoType: VideoType;
   aspectRatio: AspectRatio;
+  constructionFromFacade?: boolean;
 }
 
 export interface ApiGenerationResponse {
@@ -81,4 +94,33 @@ export interface ApiStatusResponse {
   progress?: number;
   resultUrl?: string;
   error?: string;
+}
+
+export const EMPTY_PROJECT_IMAGES: ProjectImages = {
+  fachada: { primaryImage: null, referenceImages: [] },
+  interior: { primaryImage: null, referenceImages: [] },
+  construcao: { primaryImage: null, referenceImages: [] },
+  drone: { primaryImage: null, referenceImages: [] },
+};
+
+export function createEmptyProjectImages(): ProjectImages {
+  return {
+    fachada: { primaryImage: null, referenceImages: [] },
+    interior: { primaryImage: null, referenceImages: [] },
+    construcao: { primaryImage: null, referenceImages: [] },
+    drone: { primaryImage: null, referenceImages: [] },
+  };
+}
+
+export function getAllImagesFromCategory(cat: CategoryImages): UploadedImage[] {
+  const imgs: UploadedImage[] = [];
+  if (cat.primaryImage) imgs.push(cat.primaryImage);
+  imgs.push(...cat.referenceImages);
+  return imgs;
+}
+
+export function getTotalImageCount(projectImages: ProjectImages): number {
+  return (Object.keys(projectImages) as ImageCategory[]).reduce((sum, key) => {
+    return sum + getAllImagesFromCategory(projectImages[key]).length;
+  }, 0);
 }

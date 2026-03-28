@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { createEmptyProjectImages } from '@/lib/types';
 
 export default function ProjetoPage() {
   const router = useRouter();
@@ -16,6 +17,7 @@ export default function ProjetoPage() {
       name,
       description,
       images: [],
+      categoryImages: createEmptyProjectImages(),
       createdAt: new Date().toISOString(),
     };
 

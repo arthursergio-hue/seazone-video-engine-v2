@@ -1,38 +1,43 @@
 import { ImageCategory, VideoType } from '../types';
 import { suggestVideoType } from '../services/promptService';
+import { getPresetForVideoType, OfficialPreset } from '../prompts/templates';
 
 export interface StrategyResult {
   videoType: VideoType;
   approach: string;
   reasoning: string;
+  preset: OfficialPreset;
+  constructionFromFacade: boolean;
 }
 
 export class VideoStrategistAgent {
-  analyze(imageCategory: ImageCategory, preferredType?: VideoType): StrategyResult {
+  analyze(
+    imageCategory: ImageCategory,
+    preferredType?: VideoType,
+    options?: { constructionFromFacade?: boolean; hasReferenceImages?: boolean }
+  ): StrategyResult {
     const videoType = preferredType || suggestVideoType(imageCategory);
+    const constructionFromFacade = options?.constructionFromFacade || false;
+    const preset = getPresetForVideoType(videoType, constructionFromFacade);
 
-    const approaches: Record<VideoType, { approach: string; reasoning: string }> = {
-      fachada: {
-        approach: 'Tilt-up cinematográfico revelando a fachada completa',
-        reasoning: 'Imagens de fachada funcionam melhor com movimentos verticais que revelam a escala do empreendimento',
-      },
-      interior: {
-        approach: 'Dolly forward suave atravessando os ambientes',
-        reasoning: 'Tours internos precisam de movimentos fluidos que simulam a experiência de caminhar pelo espaço',
-      },
-      construcao: {
-        approach: 'Órbita lenta mostrando progresso da obra',
-        reasoning: 'Obras são melhor apresentadas com perspectiva aérea que demonstra escala e progresso',
-      },
-      unidade: {
-        approach: 'Walkthrough elegante pela unidade',
-        reasoning: 'Unidades precisam mostrar fluxo entre ambientes e acabamentos de forma profissional',
-      },
-    };
+    let approach = preset.narrativeObjective;
+    let reasoning = `Usando preset oficial "${preset.name}" com ${preset.scenes.length} cenas planejadas.`;
+
+    if (constructionFromFacade) {
+      approach = 'Simulação visual da evolução construtiva a partir da fachada fornecida';
+      reasoning = 'Sem imagens reais de construção — gerando simulação baseada na fachada. Preset: construction_from_facade.';
+    }
+
+    if (options?.hasReferenceImages) {
+      reasoning += ' Imagens de referência disponíveis para complementar a geração.';
+    }
 
     return {
       videoType,
-      ...approaches[videoType],
+      approach,
+      reasoning,
+      preset,
+      constructionFromFacade,
     };
   }
 }

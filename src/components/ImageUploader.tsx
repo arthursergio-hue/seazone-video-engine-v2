@@ -1,29 +1,40 @@
 'use client';
 
-import { useState, useRef } from 'react';
-import { ImageCategory, UploadedImage } from '@/lib/types';
+import { useState, useRef, useCallback } from 'react';
+import { ImageCategory, UploadedImage, CategoryImages } from '@/lib/types';
 
 interface Props {
-  onUpload: (image: UploadedImage) => void;
+  categoryImages: Record<ImageCategory, CategoryImages>;
+  onImagesChange: (category: ImageCategory, images: CategoryImages) => void;
 }
 
-const categories: { value: ImageCategory; label: string }[] = [
-  { value: 'fachada', label: 'Fachada' },
-  { value: 'interior', label: 'Interior' },
-  { value: 'construcao', label: 'Construção' },
-  { value: 'drone', label: 'Drone' },
+const categories: { value: ImageCategory; label: string; icon: string; description: string }[] = [
+  { value: 'fachada', label: 'Fachada', icon: '🏢', description: 'Exterior do edifício' },
+  { value: 'interior', label: 'Interior', icon: '🏠', description: 'Ambientes internos' },
+  { value: 'construcao', label: 'Construção', icon: '🏗️', description: 'Evolução da obra' },
+  { value: 'drone', label: 'Drone', icon: '📷', description: 'Vistas aéreas' },
 ];
 
-export default function ImageUploader({ onUpload }: Props) {
-  const [category, setCategory] = useState<ImageCategory>('fachada');
+function getCategoryCount(cat: CategoryImages): number {
+  let count = 0;
+  if (cat.primaryImage) count++;
+  count += cat.referenceImages.length;
+  return count;
+}
+
+export default function ImageUploader({ categoryImages, onImagesChange }: Props) {
+  const [activeCategory, setActiveCategory] = useState<ImageCategory>('fachada');
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  async function handleFile(file: File) {
-    if (!file.type.startsWith('image/')) return;
+  const currentCat = categoryImages[activeCategory];
+  const currentCount = getCategoryCount(currentCat);
 
-    setUploading(true);
+  const uploadFile = useCallback(async (file: File, category: ImageCategory): Promise<UploadedImage | null> => {
+    if (!file.type.startsWith('image/')) return null;
+
     const formData = new FormData();
     formData.append('file', file);
     formData.append('category', category);
@@ -32,75 +43,237 @@ export default function ImageUploader({ onUpload }: Props) {
       const res = await fetch('/api/upload', { method: 'POST', body: formData });
       const data = await res.json();
       if (res.ok) {
-        onUpload({ ...data, category });
+        return { ...data, category } as UploadedImage;
       }
-    } finally {
-      setUploading(false);
+    } catch (err) {
+      console.error('Upload failed:', err);
     }
+    return null;
+  }, []);
+
+  async function handleFiles(files: FileList) {
+    if (files.length === 0) return;
+
+    setUploading(true);
+    setUploadSuccess(false);
+    const category = activeCategory;
+    const catData = { ...categoryImages[category] };
+
+    const uploadPromises = Array.from(files)
+      .filter(f => f.type.startsWith('image/'))
+      .map(f => uploadFile(f, category));
+
+    const results = await Promise.all(uploadPromises);
+    const uploaded = results.filter((r): r is UploadedImage => r !== null);
+
+    if (uploaded.length === 0) {
+      setUploading(false);
+      return;
+    }
+
+    for (const img of uploaded) {
+      if (!catData.primaryImage) {
+        catData.primaryImage = { ...img, isPrimary: true };
+      } else {
+        catData.referenceImages = [...catData.referenceImages, img];
+      }
+    }
+
+    onImagesChange(category, catData);
+    setUploading(false);
+    setUploadSuccess(true);
+    setTimeout(() => setUploadSuccess(false), 2000);
+
+    // Reset input so same file can be re-selected
+    if (fileRef.current) fileRef.current.value = '';
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
+    if (e.dataTransfer.files.length > 0) {
+      handleFiles(e.dataTransfer.files);
+    }
   }
 
+  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      handleFiles(files);
+    }
+  }
+
+  function handleRemoveImage(imageId: string) {
+    const catData = { ...categoryImages[activeCategory] };
+
+    if (catData.primaryImage?.id === imageId) {
+      // Promote first reference to primary
+      if (catData.referenceImages.length > 0) {
+        catData.primaryImage = { ...catData.referenceImages[0], isPrimary: true };
+        catData.referenceImages = catData.referenceImages.slice(1);
+      } else {
+        catData.primaryImage = null;
+      }
+    } else {
+      catData.referenceImages = catData.referenceImages.filter(img => img.id !== imageId);
+    }
+
+    onImagesChange(activeCategory, catData);
+  }
+
+  function handleSetPrimary(imageId: string) {
+    const catData = { ...categoryImages[activeCategory] };
+    const targetRef = catData.referenceImages.find(img => img.id === imageId);
+    if (!targetRef) return;
+
+    // Current primary becomes reference
+    const oldPrimary = catData.primaryImage;
+    catData.primaryImage = { ...targetRef, isPrimary: true };
+    catData.referenceImages = catData.referenceImages.filter(img => img.id !== imageId);
+    if (oldPrimary) {
+      catData.referenceImages = [{ ...oldPrimary, isPrimary: false }, ...catData.referenceImages];
+    }
+
+    onImagesChange(activeCategory, catData);
+  }
+
+  const allImages: UploadedImage[] = [];
+  if (currentCat.primaryImage) allImages.push(currentCat.primaryImage);
+  allImages.push(...currentCat.referenceImages);
+
   return (
-    <div className="space-y-4">
-      {/* Category selector */}
-      <div className="flex gap-2">
-        {categories.map((c) => (
-          <button
-            key={c.value}
-            onClick={() => setCategory(c.value)}
-            className={`px-4 py-2 rounded text-sm font-medium transition ${
-              category === c.value
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            {c.label}
-          </button>
-        ))}
+    <div className="space-y-5">
+      {/* Category tabs with counts */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {categories.map((c) => {
+          const count = getCategoryCount(categoryImages[c.value]);
+          return (
+            <button
+              key={c.value}
+              onClick={() => setActiveCategory(c.value)}
+              className={`relative px-4 py-3 rounded-lg text-sm font-medium transition flex flex-col items-center gap-1 ${
+                activeCategory === c.value
+                  ? 'bg-blue-600 text-white ring-2 ring-blue-400'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+              }`}
+            >
+              <span className="text-lg">{c.icon}</span>
+              <span>{c.label}</span>
+              <span className="text-xs opacity-70">{c.description}</span>
+              {count > 0 && (
+                <span className="absolute -top-2 -right-2 bg-green-500 text-white text-xs w-6 h-6 rounded-full flex items-center justify-center font-bold">
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
-      {/* Drop zone */}
+      {/* Drop zone - accepts multiple */}
       <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
         onClick={() => fileRef.current?.click()}
-        className={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition ${
-          dragOver
-            ? 'border-blue-500 bg-blue-500/10'
-            : 'border-gray-700 hover:border-gray-500'
+        className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition ${
+          uploadSuccess
+            ? 'border-green-500 bg-green-500/10'
+            : dragOver
+              ? 'border-blue-500 bg-blue-500/10'
+              : 'border-gray-700 hover:border-gray-500'
         }`}
       >
         <input
           ref={fileRef}
           type="file"
           accept="image/*"
+          multiple
           className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) handleFile(file);
-          }}
+          onChange={handleInputChange}
         />
         {uploading ? (
-          <p className="text-gray-400">Enviando...</p>
+          <div className="flex items-center justify-center gap-2">
+            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+            <p className="text-gray-400">Enviando imagens...</p>
+          </div>
+        ) : uploadSuccess ? (
+          <div>
+            <p className="text-green-400 text-lg font-medium">Imagens enviadas com sucesso!</p>
+            <p className="text-green-500/70 text-sm mt-1">Clique ou arraste para adicionar mais</p>
+          </div>
         ) : (
           <div>
-            <p className="text-gray-300 text-lg">Arraste uma imagem ou clique para selecionar</p>
+            <p className="text-gray-300 text-lg">Arraste imagens ou clique para selecionar</p>
             <p className="text-gray-500 text-sm mt-2">
-              Categoria: <span className="text-blue-400">{category}</span>
+              Categoria: <span className="text-blue-400 font-medium">{categories.find(c => c.value === activeCategory)?.label}</span>
+              {' '}&middot;{' '}
+              <span className="text-gray-400">Aceita múltiplos arquivos</span>
             </p>
+            {currentCount > 0 && (
+              <p className="text-gray-500 text-sm mt-1">
+                {currentCount} imagem(ns) nesta categoria
+              </p>
+            )}
           </div>
         )}
       </div>
+
+      {/* Preview grid for active category */}
+      {allImages.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-white font-medium">
+            {categories.find(c => c.value === activeCategory)?.label} ({allImages.length} imagem{allImages.length !== 1 ? 'ns' : ''})
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+            {allImages.map((img) => (
+              <div
+                key={img.id}
+                className={`relative group bg-gray-900 rounded-lg overflow-hidden border-2 transition ${
+                  img.isPrimary || img.id === currentCat.primaryImage?.id
+                    ? 'border-yellow-500'
+                    : 'border-transparent'
+                }`}
+              >
+                <img src={img.url} alt={img.filename} className="w-full h-32 object-cover" />
+
+                {/* Primary badge */}
+                {(img.isPrimary || img.id === currentCat.primaryImage?.id) && (
+                  <span className="absolute top-1 left-1 bg-yellow-500 text-black text-[10px] font-bold px-1.5 py-0.5 rounded">
+                    PRINCIPAL
+                  </span>
+                )}
+
+                {/* Hover actions */}
+                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+                  {/* Set as primary */}
+                  {!(img.isPrimary || img.id === currentCat.primaryImage?.id) && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleSetPrimary(img.id); }}
+                      className="bg-yellow-500 text-black text-xs px-2 py-1 rounded font-medium hover:bg-yellow-400"
+                      title="Definir como principal"
+                    >
+                      Principal
+                    </button>
+                  )}
+                  {/* Remove */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleRemoveImage(img.id); }}
+                    className="bg-red-600 text-white text-xs px-2 py-1 rounded font-medium hover:bg-red-500"
+                    title="Remover"
+                  >
+                    Remover
+                  </button>
+                </div>
+
+                <div className="p-2">
+                  <p className="text-gray-500 text-xs truncate">{img.filename}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
