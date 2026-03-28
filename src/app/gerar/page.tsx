@@ -44,6 +44,7 @@ export default function GerarPage() {
   const [progress, setProgress] = useState(0);
   const [logs, setLogs] = useState<VideoLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [demoMode, setDemoMode] = useState(false);
 
   const constructionHasImages = getAllImagesFromCategory(categoryImages.construcao).length > 0;
   const facadeHasImages = getAllImagesFromCategory(categoryImages.fachada).length > 0;
@@ -131,27 +132,16 @@ export default function GerarPage() {
     setStatus('pending');
     setProgress(0);
     setLogs([]);
-
-    // Resolve the actual base64 data URL for the selected image
-    let resolvedImageUrl = imageDataMap[selectedImage.id] || selectedImage.url;
-    if (!resolvedImageUrl.startsWith('data:')) {
-      const data = await getImageData(selectedImage.id);
-      if (data) resolvedImageUrl = data;
-    }
+    setDemoMode(false);
 
     const relevantCategory: ImageCategory = isConstructionFromFacade
       ? 'fachada'
       : (videoType === 'unidade' ? 'interior' : videoType);
-    const catData = categoryImages[relevantCategory];
 
-    // Resolve reference image URLs
-    const referenceUrls: string[] = [];
-    if (catData) {
-      for (const ref of catData.referenceImages) {
-        const refData = imageDataMap[ref.id] || await getImageData(ref.id);
-        if (refData) referenceUrls.push(refData);
-      }
-    }
+    // Send image reference (not full base64) — the server handles demo mode
+    // For production with real API, we'd upload to S3 first and send the URL
+    const imageRef = `indexeddb://${selectedImage.id}`;
+    const refCount = categoryImages[relevantCategory]?.referenceImages.length || 0;
 
     try {
       const res = await fetch('/api/video/generate', {
@@ -159,8 +149,8 @@ export default function GerarPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId: project.id,
-          imageUrl: resolvedImageUrl,
-          referenceImageUrls: referenceUrls,
+          imageUrl: imageRef,
+          referenceImageUrls: refCount > 0 ? [`ref_count:${refCount}`] : [],
           imageCategory: isConstructionFromFacade ? 'fachada' : relevantCategory,
           videoType,
           aspectRatio,
@@ -175,6 +165,10 @@ export default function GerarPage() {
         setLogs([{ timestamp: new Date().toISOString(), message: data.error, progress: 0 }]);
         setGenerating(false);
         return;
+      }
+
+      if (data.demoMode) {
+        setDemoMode(true);
       }
 
       setJobId(data.jobId);
@@ -306,6 +300,16 @@ export default function GerarPage() {
         onTypeChange={setVideoType}
         onRatioChange={setAspectRatio}
       />
+
+      {demoMode && (
+        <div className="bg-purple-900/30 border border-purple-700 rounded-lg p-3 text-sm">
+          <p className="text-purple-400 font-medium">Modo Demo</p>
+          <p className="text-purple-500/80 mt-1">
+            KLING_API_KEY não configurada. Geração simulada com vídeo de teste.
+            Configure a variável de ambiente na Vercel para gerar vídeos reais.
+          </p>
+        </div>
+      )}
 
       <button
         onClick={handleGenerate}

@@ -3,6 +3,7 @@ import { VideoStrategistAgent } from '@/lib/agents/VideoStrategistAgent';
 import { PromptBuilderAgent } from '@/lib/agents/PromptBuilderAgent';
 import { VideoGenerationAgent } from '@/lib/agents/VideoGenerationAgent';
 import { GenerationRequest } from '@/lib/types';
+import { isApiConfigured } from '@/lib/services/apiClient';
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,26 +22,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Agent 1: Strategist — now uses official presets
+    const demoMode = !isApiConfigured();
+
+    // Agent 1: Strategist
     const strategist = new VideoStrategistAgent();
     const strategy = strategist.analyze(imageCategory, videoType, {
       constructionFromFacade,
       hasReferenceImages: (referenceImageUrls?.length || 0) > 0,
     });
 
-    // Agent 2: Prompt Builder — uses preset-based prompts
+    // Agent 2: Prompt Builder
     const promptBuilder = new PromptBuilderAgent();
     const { formattedPrompt } = promptBuilder.build(strategy.videoType, {
       preset: strategy.preset,
       constructionFromFacade: strategy.constructionFromFacade,
     });
 
-    // Agent 3: Generation — passes reference images and construction flag
+    // Agent 3: Generation
     const generator = new VideoGenerationAgent();
     const job = await generator.generate({
       projectId,
       imageUrl,
-      referenceImageUrls,
+      referenceImageUrls: referenceImageUrls?.slice(0, 3), // limit references
       videoType: strategy.videoType,
       aspectRatio: aspectRatio || '9:16',
       constructionFromFacade: strategy.constructionFromFacade,
@@ -50,6 +53,7 @@ export async function POST(request: NextRequest) {
       jobId: job.id,
       status: job.status,
       progress: job.progress,
+      demoMode,
       strategy: {
         videoType: strategy.videoType,
         approach: strategy.approach,
@@ -61,6 +65,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Internal server error';
+    console.error('[generate] Error:', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
