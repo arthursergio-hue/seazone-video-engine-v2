@@ -1,5 +1,5 @@
 import { VideoJob } from '../types';
-import { checkVideoStatus, getJob } from '../services/videoService';
+import { checkJobStatus, getJob } from '../services/videoService';
 
 export class VideoStatusAgent {
   async check(jobId: string): Promise<VideoJob> {
@@ -14,6 +14,6 @@ export class VideoStatusAgent {
       return job;
     }
 
-    return checkVideoStatus(jobId);
+    return checkJobStatus(jobId);
   }
 }

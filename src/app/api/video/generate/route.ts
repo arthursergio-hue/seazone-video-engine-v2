@@ -3,11 +3,11 @@ import { VideoStrategistAgent } from '@/lib/agents/VideoStrategistAgent';
 import { PromptBuilderAgent } from '@/lib/agents/PromptBuilderAgent';
 import { VideoGenerationAgent } from '@/lib/agents/VideoGenerationAgent';
 import { GenerationRequest } from '@/lib/types';
-import { isApiConfigured } from '@/lib/services/apiClient';
+import { getDefaultProvider, getAvailableProviders, VideoProvider } from '@/lib/services/apiClient';
 
 export async function POST(request: NextRequest) {
   try {
-    const body: GenerationRequest = await request.json();
+    const body = await request.json();
     const {
       projectId,
       imageUrl,
@@ -16,13 +16,22 @@ export async function POST(request: NextRequest) {
       videoType,
       aspectRatio,
       constructionFromFacade,
-    } = body;
+      provider: requestedProvider,
+    } = body as GenerationRequest & { provider?: VideoProvider };
 
     if (!projectId || !imageUrl || !videoType) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    const demoMode = !isApiConfigured();
+    // Resolve provider
+    const availableProviders = getAvailableProviders();
+    let provider = requestedProvider || getDefaultProvider();
+    const providerInfo = availableProviders.find(p => p.id === provider);
+    if (!providerInfo?.available) {
+      provider = getDefaultProvider();
+    }
+
+    const demoMode = provider === 'demo';
 
     // Agent 1: Strategist
     const strategist = new VideoStrategistAgent();
@@ -43,10 +52,11 @@ export async function POST(request: NextRequest) {
     const job = await generator.generate({
       projectId,
       imageUrl,
-      referenceImageUrls: referenceImageUrls?.slice(0, 3), // limit references
+      referenceImageUrls: referenceImageUrls?.slice(0, 3),
       videoType: strategy.videoType,
       aspectRatio: aspectRatio || '9:16',
       constructionFromFacade: strategy.constructionFromFacade,
+      provider,
     });
 
     return NextResponse.json({
@@ -55,6 +65,8 @@ export async function POST(request: NextRequest) {
       status: job.status,
       progress: job.progress,
       demoMode,
+      provider,
+      providerName: providerInfo?.name || provider,
       strategy: {
         videoType: strategy.videoType,
         approach: strategy.approach,

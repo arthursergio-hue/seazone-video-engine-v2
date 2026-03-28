@@ -1,5 +1,6 @@
 import { AspectRatio, VideoJob, VideoType } from '../types';
 import { createVideoJob, startVideoGeneration } from '../services/videoService';
+import { VideoProvider } from '../services/apiClient';
 
 export class VideoGenerationAgent {
   async generate(params: {
@@ -9,9 +10,10 @@ export class VideoGenerationAgent {
     videoType: VideoType;
     aspectRatio: AspectRatio;
     constructionFromFacade?: boolean;
+    provider?: VideoProvider;
   }): Promise<VideoJob> {
     const job = await createVideoJob(params);
-    await startVideoGeneration(job.id);
+    await startVideoGeneration(job.id, params.provider);
     return job;
   }
 }

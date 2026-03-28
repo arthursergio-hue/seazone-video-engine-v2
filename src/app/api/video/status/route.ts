@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { VideoStatusAgent } from '@/lib/agents/VideoStatusAgent';
 import { VideoValidatorAgent } from '@/lib/agents/VideoValidatorAgent';
-import { klingCheckStatus, isApiConfigured } from '@/lib/services/apiClient';
+import { checkVideoStatus, isApiConfigured } from '@/lib/services/apiClient';
 import { getJob } from '@/lib/services/videoService';
 
 export async function GET(request: NextRequest) {
@@ -81,7 +81,7 @@ export async function GET(request: NextRequest) {
       // Real API status check
       if (isApiConfigured()) {
         try {
-          const apiStatus = await klingCheckStatus(apiJobId);
+          const apiStatus = await checkVideoStatus(apiJobId);
           return NextResponse.json({
             jobId,
             status: apiStatus.status === 'completed' ? 'completed'

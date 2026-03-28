@@ -1,16 +1,12 @@
 import { AspectRatio, VideoJob, VideoLog, VideoStatus, VideoType } from '../types';
 import { generatePrompt, formatPromptForApi } from './promptService';
-import { klingGenerateVideo, klingCheckStatus } from './apiClient';
+import { generateVideo, checkVideoStatus, VideoProvider, getDefaultProvider } from './apiClient';
 
-// In-memory store (replace with DB later)
+// In-memory store
 const jobs = new Map<string, VideoJob>();
 
 function createLog(message: string, progress: number): VideoLog {
-  return {
-    timestamp: new Date().toISOString(),
-    message,
-    progress,
-  };
+  return { timestamp: new Date().toISOString(), message, progress };
 }
 
 function generateId(): string {
@@ -55,30 +51,28 @@ export async function createVideoJob(params: {
   return job;
 }
 
-export async function startVideoGeneration(jobId: string): Promise<VideoJob> {
+export async function startVideoGeneration(jobId: string, provider?: VideoProvider): Promise<VideoJob> {
   const job = jobs.get(jobId);
   if (!job) throw new Error(`Job ${jobId} not found`);
 
-  // Step 1: Prepare
-  updateJob(job, 'preparing', 10, 'Preparando imagens...');
+  const activeProvider = provider || getDefaultProvider();
+  updateJob(job, 'preparing', 10, `Preparando imagens... (Provider: ${activeProvider})`);
 
   if (job.constructionFromFacade) {
     updateJob(job, 'preparing', 15, 'Modo: Construção a partir da fachada — simulação visual');
   }
 
   if (job.referenceImageUrls && job.referenceImageUrls.length > 0) {
-    updateJob(job, 'preparing', 20, `${job.referenceImageUrls.length} imagem(ns) de referência disponíveis`);
+    updateJob(job, 'preparing', 20, `${job.referenceImageUrls.length} imagem(ns) de referência`);
   }
 
-  // Step 2: Generate prompt
   updateJob(job, 'generating_prompt', 30, 'Gerando prompt otimizado com preset oficial...');
   const promptText = formatPromptForApi(job.prompt);
 
-  // Step 3: Send to API
-  updateJob(job, 'sending_to_api', 50, 'Enviando para API de geração...');
+  updateJob(job, 'sending_to_api', 50, `Enviando para ${activeProvider}...`);
 
   try {
-    const result = await klingGenerateVideo({
+    const result = await generateVideo(activeProvider, {
       prompt: promptText,
       imageUrl: job.imageUrl,
       aspectRatio: job.aspectRatio,
@@ -86,7 +80,8 @@ export async function startVideoGeneration(jobId: string): Promise<VideoJob> {
     });
 
     job.apiJobId = result.taskId;
-    updateJob(job, 'processing', 70, `Processando vídeo (API ID: ${result.taskId})...`);
+    job.parameters.provider = result.provider;
+    updateJob(job, 'processing', 70, `Processando vídeo (${result.provider}: ${result.taskId.substring(0, 30)}...)`)
 
     return job;
   } catch (error) {
@@ -96,12 +91,12 @@ export async function startVideoGeneration(jobId: string): Promise<VideoJob> {
   }
 }
 
-export async function checkVideoStatus(jobId: string): Promise<VideoJob> {
+export async function checkJobStatus(jobId: string): Promise<VideoJob> {
   const job = jobs.get(jobId);
   if (!job) throw new Error(`Job ${jobId} not found`);
   if (!job.apiJobId) throw new Error(`Job ${jobId} has no API task ID`);
 
-  const status = await klingCheckStatus(job.apiJobId);
+  const status = await checkVideoStatus(job.apiJobId);
 
   if (status.status === 'completed' && status.resultUrl) {
     job.resultUrl = status.resultUrl;

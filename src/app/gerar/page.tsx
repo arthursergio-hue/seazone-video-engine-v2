@@ -18,6 +18,7 @@ import {
 } from '@/lib/types';
 import { officialPresets, VideoPreset } from '@/lib/prompts/templates';
 import { loadAllImages, getImageData } from '@/lib/storage';
+import ProviderSelector from '@/components/ProviderSelector';
 
 function getPresetId(videoType: VideoType, constructionFromFacade: boolean): VideoPreset {
   if (videoType === 'construcao' && constructionFromFacade) return 'construction_from_facade';
@@ -46,6 +47,8 @@ export default function GerarPage() {
   const [loading, setLoading] = useState(true);
   const [demoMode, setDemoMode] = useState(false);
   const [apiJobId, setApiJobId] = useState<string | null>(null);
+  const [provider, setProvider] = useState<string>('fal_kling');
+  const [providerName, setProviderName] = useState<string>('');
 
   const constructionHasImages = getAllImagesFromCategory(categoryImages.construcao).length > 0;
   const facadeHasImages = getAllImagesFromCategory(categoryImages.fachada).length > 0;
@@ -166,6 +169,7 @@ export default function GerarPage() {
           videoType,
           aspectRatio,
           constructionFromFacade: isConstructionFromFacade,
+          provider,
         }),
       });
 
@@ -180,6 +184,9 @@ export default function GerarPage() {
 
       if (data.demoMode) {
         setDemoMode(true);
+      }
+      if (data.providerName) {
+        setProviderName(data.providerName);
       }
 
       const receivedApiJobId = data.apiJobId || null;
@@ -307,6 +314,11 @@ export default function GerarPage() {
         </div>
       )}
 
+      <ProviderSelector
+        selectedProvider={provider}
+        onProviderChange={setProvider}
+      />
+
       <VideoTypeSelector
         selectedType={videoType}
         selectedRatio={aspectRatio}
@@ -329,7 +341,7 @@ export default function GerarPage() {
         disabled={generating || !selectedImage}
         className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-lg"
       >
-        {generating ? 'Gerando...' : `Gerar Vídeo — ${activePreset.name}`}
+        {generating ? `Gerando com ${providerName || provider}...` : `Gerar Vídeo — ${activePreset.name}`}
       </button>
 
       {(generating || status !== 'pending') && (
