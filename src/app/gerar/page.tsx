@@ -17,6 +17,7 @@ import {
   getAllImagesFromCategory,
 } from '@/lib/types';
 import { officialPresets, VideoPreset } from '@/lib/prompts/templates';
+import { loadAllImages, getImageData } from '@/lib/storage';
 
 function getPresetId(videoType: VideoType, constructionFromFacade: boolean): VideoPreset {
   if (videoType === 'construcao' && constructionFromFacade) return 'construction_from_facade';
@@ -33,6 +34,7 @@ export default function GerarPage() {
   const router = useRouter();
   const [project, setProject] = useState<VideoProject | null>(null);
   const [categoryImages, setCategoryImages] = useState<ProjectImages>(createEmptyProjectImages());
+  const [imageDataMap, setImageDataMap] = useState<Record<string, string>>({});
   const [videoType, setVideoType] = useState<VideoType>('fachada');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
   const [selectedImage, setSelectedImage] = useState<UploadedImage | null>(null);
@@ -41,8 +43,8 @@ export default function GerarPage() {
   const [status, setStatus] = useState<VideoStatus>('pending');
   const [progress, setProgress] = useState(0);
   const [logs, setLogs] = useState<VideoLog[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Derived state
   const constructionHasImages = getAllImagesFromCategory(categoryImages.construcao).length > 0;
   const facadeHasImages = getAllImagesFromCategory(categoryImages.fachada).length > 0;
   const isConstructionFromFacade = videoType === 'construcao' && !constructionHasImages && facadeHasImages;
@@ -51,42 +53,54 @@ export default function GerarPage() {
   const activePreset = officialPresets[activePresetId];
 
   useEffect(() => {
-    const stored = localStorage.getItem('currentProject');
-    if (stored) {
+    async function init() {
+      const stored = localStorage.getItem('currentProject');
+      if (!stored) {
+        setLoading(false);
+        return;
+      }
+
       const p = JSON.parse(stored) as VideoProject;
       setProject(p);
 
       const catImgs = p.categoryImages || createEmptyProjectImages();
       setCategoryImages(catImgs);
 
-      // Auto-select first available image
+      // Load all image data from IndexedDB
+      const allIds = (p.images || []).map(img => img.id);
+      if (allIds.length > 0) {
+        const data = await loadAllImages(allIds);
+        setImageDataMap(data);
+      }
+
       if (p.images && p.images.length > 0) {
         setSelectedImage(p.images[0]);
       }
+
+      setLoading(false);
     }
+    init();
   }, []);
 
-  // When videoType changes, auto-select best image for that type
+  // Auto-select best image when videoType changes
   useEffect(() => {
-    if (!project) return;
+    if (!project || loading) return;
 
     const relevantCategory: ImageCategory = videoType === 'unidade' ? 'interior' : videoType;
     let bestImage: UploadedImage | null = null;
 
     if (isConstructionFromFacade) {
-      // Use facade primary for construction
       bestImage = categoryImages.fachada.primaryImage;
     } else {
       bestImage = categoryImages[relevantCategory]?.primaryImage || null;
     }
 
-    // Fallback: any image
     if (!bestImage && project.images.length > 0) {
       bestImage = project.images[0];
     }
 
     setSelectedImage(bestImage);
-  }, [videoType, project, categoryImages, isConstructionFromFacade]);
+  }, [videoType, project, categoryImages, isConstructionFromFacade, loading]);
 
   const pollStatus = useCallback(async (id: string) => {
     try {
@@ -118,14 +132,26 @@ export default function GerarPage() {
     setProgress(0);
     setLogs([]);
 
-    // Gather reference images for the selected category
+    // Resolve the actual base64 data URL for the selected image
+    let resolvedImageUrl = imageDataMap[selectedImage.id] || selectedImage.url;
+    if (!resolvedImageUrl.startsWith('data:')) {
+      const data = await getImageData(selectedImage.id);
+      if (data) resolvedImageUrl = data;
+    }
+
     const relevantCategory: ImageCategory = isConstructionFromFacade
       ? 'fachada'
       : (videoType === 'unidade' ? 'interior' : videoType);
     const catData = categoryImages[relevantCategory];
-    const referenceUrls = catData
-      ? catData.referenceImages.map(img => img.url)
-      : [];
+
+    // Resolve reference image URLs
+    const referenceUrls: string[] = [];
+    if (catData) {
+      for (const ref of catData.referenceImages) {
+        const refData = imageDataMap[ref.id] || await getImageData(ref.id);
+        if (refData) referenceUrls.push(refData);
+      }
+    }
 
     try {
       const res = await fetch('/api/video/generate', {
@@ -133,7 +159,7 @@ export default function GerarPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId: project.id,
-          imageUrl: selectedImage.url,
+          imageUrl: resolvedImageUrl,
           referenceImageUrls: referenceUrls,
           imageCategory: isConstructionFromFacade ? 'fachada' : relevantCategory,
           videoType,
@@ -163,6 +189,19 @@ export default function GerarPage() {
     }
   }
 
+  function getDisplayUrl(img: UploadedImage): string {
+    return imageDataMap[img.id] || img.url;
+  }
+
+  if (loading) {
+    return (
+      <div className="text-center py-12">
+        <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto" />
+        <p className="text-gray-400 mt-3">Carregando projeto...</p>
+      </div>
+    );
+  }
+
   if (!project) {
     return (
       <div className="text-center py-12">
@@ -173,6 +212,9 @@ export default function GerarPage() {
       </div>
     );
   }
+
+  const refCategory: ImageCategory = isConstructionFromFacade ? 'fachada' : (videoType === 'unidade' ? 'interior' : videoType);
+  const refCount = categoryImages[refCategory]?.referenceImages.length || 0;
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -207,18 +249,16 @@ export default function GerarPage() {
         )}
       </div>
 
-      {/* Construction from facade notice */}
       {isConstructionFromFacade && (
         <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 text-sm">
           <p className="text-yellow-400 font-medium">Modo: Construção a partir da Fachada</p>
           <p className="text-yellow-500/80 mt-1">
             Simulação visual da evolução construtiva baseada na imagem da fachada.
-            Não é documentação real da obra.
           </p>
         </div>
       )}
 
-      {/* Image selection by category */}
+      {/* Image selection */}
       {project.images.length > 0 && (
         <div>
           <h3 className="text-white font-medium mb-3">
@@ -228,24 +268,33 @@ export default function GerarPage() {
             )}
           </h3>
           <div className="flex gap-3 overflow-x-auto pb-2">
-            {project.images.map((img) => (
-              <button
-                key={img.id}
-                onClick={() => setSelectedImage(img)}
-                className={`flex-shrink-0 rounded-lg overflow-hidden border-2 transition relative ${
-                  selectedImage?.id === img.id ? 'border-blue-500' : 'border-transparent'
-                }`}
-              >
-                <img src={img.url} alt={img.filename} className="w-24 h-24 object-cover" />
-                <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 text-center">
-                  {img.category}
-                </span>
-              </button>
-            ))}
+            {project.images.map((img) => {
+              const displayUrl = getDisplayUrl(img);
+              return (
+                <button
+                  key={img.id}
+                  onClick={() => setSelectedImage(img)}
+                  className={`flex-shrink-0 rounded-lg overflow-hidden border-2 transition relative ${
+                    selectedImage?.id === img.id ? 'border-blue-500' : 'border-transparent'
+                  }`}
+                >
+                  {displayUrl && displayUrl.startsWith('data:') ? (
+                    <img src={displayUrl} alt={img.filename} className="w-24 h-24 object-cover" />
+                  ) : (
+                    <div className="w-24 h-24 bg-gray-800 flex items-center justify-center">
+                      <span className="text-gray-600 text-[10px]">...</span>
+                    </div>
+                  )}
+                  <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 text-center">
+                    {img.category}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-          {selectedImage && categoryImages[isConstructionFromFacade ? 'fachada' : (videoType === 'unidade' ? 'interior' : videoType)]?.referenceImages.length > 0 && (
+          {refCount > 0 && (
             <p className="text-gray-500 text-xs mt-2">
-              + {categoryImages[isConstructionFromFacade ? 'fachada' : (videoType === 'unidade' ? 'interior' : videoType)].referenceImages.length} imagem(ns) de referência serão usadas
+              + {refCount} imagem(ns) de referência serão usadas
             </p>
           )}
         </div>

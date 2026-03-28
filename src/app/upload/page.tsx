@@ -12,42 +12,72 @@ import {
   getTotalImageCount,
   getAllImagesFromCategory,
 } from '@/lib/types';
+import { loadAllImages } from '@/lib/storage';
+
+function collectAllImageIds(projectImages: ProjectImages): string[] {
+  const ids: string[] = [];
+  for (const cat of Object.values(projectImages)) {
+    if (cat.primaryImage) ids.push(cat.primaryImage.id);
+    for (const img of cat.referenceImages) ids.push(img.id);
+  }
+  return ids;
+}
 
 export default function UploadPage() {
   const router = useRouter();
   const [project, setProject] = useState<VideoProject | null>(null);
   const [categoryImages, setCategoryImages] = useState<ProjectImages>(createEmptyProjectImages());
+  const [imageDataMap, setImageDataMap] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const stored = localStorage.getItem('currentProject');
-    if (stored) {
+    async function init() {
+      const stored = localStorage.getItem('currentProject');
+      if (!stored) {
+        setLoading(false);
+        return;
+      }
+
       const p = JSON.parse(stored) as VideoProject;
       setProject(p);
 
-      // Migrate: if project has categoryImages, use them; otherwise rebuild from flat images array
+      let catImgs = createEmptyProjectImages();
       if (p.categoryImages) {
-        setCategoryImages(p.categoryImages);
+        catImgs = p.categoryImages;
       } else if (p.images && p.images.length > 0) {
-        const migrated = createEmptyProjectImages();
         for (const img of p.images) {
           const cat = img.category;
-          if (!migrated[cat].primaryImage) {
-            migrated[cat].primaryImage = { ...img, isPrimary: true };
+          if (!catImgs[cat].primaryImage) {
+            catImgs[cat].primaryImage = { ...img, isPrimary: true };
           } else {
-            migrated[cat].referenceImages.push(img);
+            catImgs[cat].referenceImages.push(img);
           }
         }
-        setCategoryImages(migrated);
       }
+      setCategoryImages(catImgs);
+
+      // Load image data from IndexedDB
+      const ids = collectAllImageIds(catImgs);
+      if (ids.length > 0) {
+        const data = await loadAllImages(ids);
+        setImageDataMap(data);
+      }
+
+      setLoading(false);
     }
+    init();
   }, []);
 
-  function handleImagesChange(category: ImageCategory, images: CategoryImages) {
+  function handleImagesChange(category: ImageCategory, images: CategoryImages, newDataEntries?: Record<string, string>) {
     const updated = { ...categoryImages, [category]: images };
     setCategoryImages(updated);
 
+    // Merge new image data into map
+    if (newDataEntries) {
+      setImageDataMap(prev => ({ ...prev, ...newDataEntries }));
+    }
+
     if (project) {
-      // Rebuild flat images array for backward compatibility
       const allImages = (Object.keys(updated) as ImageCategory[]).flatMap(
         (key) => getAllImagesFromCategory(updated[key])
       );
@@ -57,12 +87,22 @@ export default function UploadPage() {
         categoryImages: updated,
       };
       setProject(updatedProject);
+      // Only metadata goes to localStorage (no base64), image data is in IndexedDB
       localStorage.setItem('currentProject', JSON.stringify(updatedProject));
     }
   }
 
   function handleContinue() {
     router.push('/gerar');
+  }
+
+  if (loading) {
+    return (
+      <div className="text-center py-12">
+        <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto" />
+        <p className="text-gray-400 mt-3">Carregando projeto...</p>
+      </div>
+    );
   }
 
   if (!project) {
@@ -80,8 +120,6 @@ export default function UploadPage() {
   }
 
   const totalCount = getTotalImageCount(categoryImages);
-
-  // Check if construction has no images but facade does
   const hasConstructionImages = getAllImagesFromCategory(categoryImages.construcao).length > 0;
   const hasFacadeImages = getAllImagesFromCategory(categoryImages.fachada).length > 0;
   const willUseConstructionFromFacade = !hasConstructionImages && hasFacadeImages;
@@ -97,10 +135,10 @@ export default function UploadPage() {
 
       <ImageUploader
         categoryImages={categoryImages}
+        imageDataMap={imageDataMap}
         onImagesChange={handleImagesChange}
       />
 
-      {/* Summary */}
       {totalCount > 0 && (
         <div className="bg-gray-900 rounded-lg p-4 space-y-3">
           <h3 className="text-white font-medium">Resumo ({totalCount} imagens total)</h3>

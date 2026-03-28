@@ -2,10 +2,12 @@
 
 import { useState, useRef } from 'react';
 import { ImageCategory, UploadedImage, CategoryImages } from '@/lib/types';
+import { saveImageData, deleteImageData } from '@/lib/storage';
 
 interface Props {
   categoryImages: Record<ImageCategory, CategoryImages>;
-  onImagesChange: (category: ImageCategory, images: CategoryImages) => void;
+  imageDataMap: Record<string, string>; // id -> base64 data URL for display
+  onImagesChange: (category: ImageCategory, images: CategoryImages, newDataEntries?: Record<string, string>) => void;
 }
 
 const categories: { value: ImageCategory; label: string; icon: string; description: string }[] = [
@@ -31,7 +33,7 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-export default function ImageUploader({ categoryImages, onImagesChange }: Props) {
+export default function ImageUploader({ categoryImages, imageDataMap, onImagesChange }: Props) {
   const [activeCategory, setActiveCategory] = useState<ImageCategory>('fachada');
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -55,13 +57,20 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
     };
 
     const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+    const newDataEntries: Record<string, string> = {};
 
     for (const file of imageFiles) {
       try {
         const base64Url = await fileToBase64(file);
+        const id = `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+        // Save to IndexedDB
+        await saveImageData(id, base64Url);
+        newDataEntries[id] = base64Url;
+
         const img: UploadedImage = {
-          id: `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          url: base64Url,
+          id,
+          url: id, // store ID as reference, actual data is in IndexedDB
           category,
           filename: file.name,
         };
@@ -76,12 +85,11 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
       }
     }
 
-    onImagesChange(category, catData);
+    onImagesChange(category, catData, newDataEntries);
     setUploading(false);
     setUploadSuccess(true);
     setTimeout(() => setUploadSuccess(false), 2000);
 
-    // Reset input so same file can be re-selected
     if (fileRef.current) fileRef.current.value = '';
   }
 
@@ -107,6 +115,8 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
         : null,
       referenceImages: [...categoryImages[activeCategory].referenceImages],
     };
+
+    deleteImageData(imageId).catch(() => {});
 
     if (catData.primaryImage?.id === imageId) {
       if (catData.referenceImages.length > 0) {
@@ -143,6 +153,11 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
     onImagesChange(activeCategory, catData);
   }
 
+  // Get display URL: from imageDataMap (loaded from IndexedDB) or fallback to url field
+  function getDisplayUrl(img: UploadedImage): string {
+    return imageDataMap[img.id] || imageDataMap[img.url] || img.url;
+  }
+
   const allImages: UploadedImage[] = [];
   if (currentCat.primaryImage) allImages.push(currentCat.primaryImage);
   allImages.push(...currentCat.referenceImages);
@@ -176,7 +191,7 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
         })}
       </div>
 
-      {/* Drop zone - accepts multiple */}
+      {/* Drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
@@ -225,56 +240,61 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
         )}
       </div>
 
-      {/* Preview grid for active category */}
+      {/* Preview grid */}
       {allImages.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-white font-medium">
             {categories.find(c => c.value === activeCategory)?.label} ({allImages.length} imagem{allImages.length !== 1 ? 'ns' : ''})
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-            {allImages.map((img) => (
-              <div
-                key={img.id}
-                className={`relative group bg-gray-900 rounded-lg overflow-hidden border-2 transition ${
-                  img.isPrimary || img.id === currentCat.primaryImage?.id
-                    ? 'border-yellow-500'
-                    : 'border-transparent'
-                }`}
-              >
-                <img src={img.url} alt={img.filename} className="w-full h-32 object-cover" />
-
-                {/* Primary badge */}
-                {(img.isPrimary || img.id === currentCat.primaryImage?.id) && (
-                  <span className="absolute top-1 left-1 bg-yellow-500 text-black text-[10px] font-bold px-1.5 py-0.5 rounded">
-                    PRINCIPAL
-                  </span>
-                )}
-
-                {/* Hover actions */}
-                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
-                  {!(img.isPrimary || img.id === currentCat.primaryImage?.id) && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleSetPrimary(img.id); }}
-                      className="bg-yellow-500 text-black text-xs px-2 py-1 rounded font-medium hover:bg-yellow-400"
-                      title="Definir como principal"
-                    >
-                      Principal
-                    </button>
+            {allImages.map((img) => {
+              const displayUrl = getDisplayUrl(img);
+              return (
+                <div
+                  key={img.id}
+                  className={`relative group bg-gray-900 rounded-lg overflow-hidden border-2 transition ${
+                    img.isPrimary || img.id === currentCat.primaryImage?.id
+                      ? 'border-yellow-500'
+                      : 'border-transparent'
+                  }`}
+                >
+                  {displayUrl && displayUrl.startsWith('data:') ? (
+                    <img src={displayUrl} alt={img.filename} className="w-full h-32 object-cover" />
+                  ) : (
+                    <div className="w-full h-32 bg-gray-800 flex items-center justify-center">
+                      <span className="text-gray-500 text-xs">Carregando...</span>
+                    </div>
                   )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleRemoveImage(img.id); }}
-                    className="bg-red-600 text-white text-xs px-2 py-1 rounded font-medium hover:bg-red-500"
-                    title="Remover"
-                  >
-                    Remover
-                  </button>
-                </div>
 
-                <div className="p-2">
-                  <p className="text-gray-500 text-xs truncate">{img.filename}</p>
+                  {(img.isPrimary || img.id === currentCat.primaryImage?.id) && (
+                    <span className="absolute top-1 left-1 bg-yellow-500 text-black text-[10px] font-bold px-1.5 py-0.5 rounded">
+                      PRINCIPAL
+                    </span>
+                  )}
+
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+                    {!(img.isPrimary || img.id === currentCat.primaryImage?.id) && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleSetPrimary(img.id); }}
+                        className="bg-yellow-500 text-black text-xs px-2 py-1 rounded font-medium hover:bg-yellow-400"
+                      >
+                        Principal
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleRemoveImage(img.id); }}
+                      className="bg-red-600 text-white text-xs px-2 py-1 rounded font-medium hover:bg-red-500"
+                    >
+                      Remover
+                    </button>
+                  </div>
+
+                  <div className="p-2">
+                    <p className="text-gray-500 text-xs truncate">{img.filename}</p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
