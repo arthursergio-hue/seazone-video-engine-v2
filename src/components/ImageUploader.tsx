@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef } from 'react';
 import { ImageCategory, UploadedImage, CategoryImages } from '@/lib/types';
 
 interface Props {
@@ -22,6 +22,15 @@ function getCategoryCount(cat: CategoryImages): number {
   return count;
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function ImageUploader({ categoryImages, onImagesChange }: Props) {
   const [activeCategory, setActiveCategory] = useState<ImageCategory>('fachada');
   const [uploading, setUploading] = useState(false);
@@ -32,50 +41,38 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
   const currentCat = categoryImages[activeCategory];
   const currentCount = getCategoryCount(currentCat);
 
-  const uploadFile = useCallback(async (file: File, category: ImageCategory): Promise<UploadedImage | null> => {
-    if (!file.type.startsWith('image/')) return null;
-
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('category', category);
-
-    try {
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (res.ok) {
-        return { ...data, category } as UploadedImage;
-      }
-    } catch (err) {
-      console.error('Upload failed:', err);
-    }
-    return null;
-  }, []);
-
   async function handleFiles(files: FileList) {
     if (files.length === 0) return;
 
     setUploading(true);
     setUploadSuccess(false);
     const category = activeCategory;
-    const catData = { ...categoryImages[category] };
+    const catData: CategoryImages = {
+      primaryImage: categoryImages[category].primaryImage
+        ? { ...categoryImages[category].primaryImage! }
+        : null,
+      referenceImages: [...categoryImages[category].referenceImages],
+    };
 
-    const uploadPromises = Array.from(files)
-      .filter(f => f.type.startsWith('image/'))
-      .map(f => uploadFile(f, category));
+    const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
 
-    const results = await Promise.all(uploadPromises);
-    const uploaded = results.filter((r): r is UploadedImage => r !== null);
+    for (const file of imageFiles) {
+      try {
+        const base64Url = await fileToBase64(file);
+        const img: UploadedImage = {
+          id: `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          url: base64Url,
+          category,
+          filename: file.name,
+        };
 
-    if (uploaded.length === 0) {
-      setUploading(false);
-      return;
-    }
-
-    for (const img of uploaded) {
-      if (!catData.primaryImage) {
-        catData.primaryImage = { ...img, isPrimary: true };
-      } else {
-        catData.referenceImages = [...catData.referenceImages, img];
+        if (!catData.primaryImage) {
+          catData.primaryImage = { ...img, isPrimary: true };
+        } else {
+          catData.referenceImages = [...catData.referenceImages, img];
+        }
+      } catch (err) {
+        console.error('Error reading file:', err);
       }
     }
 
@@ -104,10 +101,14 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
   }
 
   function handleRemoveImage(imageId: string) {
-    const catData = { ...categoryImages[activeCategory] };
+    const catData: CategoryImages = {
+      primaryImage: categoryImages[activeCategory].primaryImage
+        ? { ...categoryImages[activeCategory].primaryImage! }
+        : null,
+      referenceImages: [...categoryImages[activeCategory].referenceImages],
+    };
 
     if (catData.primaryImage?.id === imageId) {
-      // Promote first reference to primary
       if (catData.referenceImages.length > 0) {
         catData.primaryImage = { ...catData.referenceImages[0], isPrimary: true };
         catData.referenceImages = catData.referenceImages.slice(1);
@@ -122,11 +123,16 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
   }
 
   function handleSetPrimary(imageId: string) {
-    const catData = { ...categoryImages[activeCategory] };
+    const catData: CategoryImages = {
+      primaryImage: categoryImages[activeCategory].primaryImage
+        ? { ...categoryImages[activeCategory].primaryImage! }
+        : null,
+      referenceImages: [...categoryImages[activeCategory].referenceImages],
+    };
+
     const targetRef = catData.referenceImages.find(img => img.id === imageId);
     if (!targetRef) return;
 
-    // Current primary becomes reference
     const oldPrimary = catData.primaryImage;
     catData.primaryImage = { ...targetRef, isPrimary: true };
     catData.referenceImages = catData.referenceImages.filter(img => img.id !== imageId);
@@ -195,11 +201,11 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
         {uploading ? (
           <div className="flex items-center justify-center gap-2">
             <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-            <p className="text-gray-400">Enviando imagens...</p>
+            <p className="text-gray-400">Processando imagens...</p>
           </div>
         ) : uploadSuccess ? (
           <div>
-            <p className="text-green-400 text-lg font-medium">Imagens enviadas com sucesso!</p>
+            <p className="text-green-400 text-lg font-medium">Imagens adicionadas com sucesso!</p>
             <p className="text-green-500/70 text-sm mt-1">Clique ou arraste para adicionar mais</p>
           </div>
         ) : (
@@ -246,7 +252,6 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
 
                 {/* Hover actions */}
                 <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
-                  {/* Set as primary */}
                   {!(img.isPrimary || img.id === currentCat.primaryImage?.id) && (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleSetPrimary(img.id); }}
@@ -256,7 +261,6 @@ export default function ImageUploader({ categoryImages, onImagesChange }: Props)
                       Principal
                     </button>
                   )}
-                  {/* Remove */}
                   <button
                     onClick={(e) => { e.stopPropagation(); handleRemoveImage(img.id); }}
                     className="bg-red-600 text-white text-xs px-2 py-1 rounded font-medium hover:bg-red-500"
