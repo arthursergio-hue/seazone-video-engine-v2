@@ -91,51 +91,95 @@ async function falGenerate(
 
   fal.config({ credentials: falKey });
 
+  // Use queue.submit for async (non-blocking) — avoids serverless timeout
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result: any = await (fal as any).subscribe(model, {
+  const result: any = await (fal as any).queue.submit(model, {
     input: {
       prompt: params.prompt,
       image_url: params.imageUrl,
       duration: params.duration <= 5 ? '5' : '10',
       aspect_ratio: params.aspectRatio === '16:9' ? '16:9' : '9:16',
     },
-    logs: true,
   });
 
-  // Extract video URL from FAL response (different models return differently)
-  const videoUrl = result?.video?.url
-    || result?.data?.video?.url
-    || result?.output?.video?.url
-    || result?.data?.output?.video?.url
-    || '';
-
-  if (!videoUrl) {
-    console.error('[FAL] Full response:', JSON.stringify(result, null, 2));
-    throw new Error('FAL returned no video URL. Check model response format.');
+  const requestId = result?.request_id;
+  if (!requestId) {
+    console.error('[FAL] Submit response:', JSON.stringify(result, null, 2));
+    throw new Error('FAL did not return a request_id');
   }
 
-  // Encode result URL in taskId for stateless retrieval
-  return { taskId: `fal_completed_${Date.now()}_${encodeURIComponent(videoUrl)}` };
+  // Encode model + requestId for status polling
+  return { taskId: `fal_${encodeURIComponent(model)}_${requestId}` };
 }
 
-function falCheckStatus(taskId: string): {
+async function falCheckStatus(taskId: string): Promise<{
   status: string;
   progress?: number;
   resultUrl?: string;
   error?: string;
-} {
-  if (taskId.startsWith('fal_completed_')) {
-    // Extract URL: everything after the third underscore
-    const thirdUnderscore = taskId.indexOf('_', taskId.indexOf('_', 4) + 1);
-    const urlPart = taskId.substring(thirdUnderscore + 1);
-    const videoUrl = decodeURIComponent(urlPart);
+}> {
+  const falKey = getFalKey();
+  if (!falKey) return { status: 'failed', error: 'FAL_KEY not configured' };
 
-    if (videoUrl && videoUrl.startsWith('http')) {
-      return { status: 'completed', progress: 100, resultUrl: videoUrl };
+  fal.config({ credentials: falKey });
+
+  // Parse taskId: fal_{model}_{requestId}
+  const withoutPrefix = taskId.substring(4); // remove "fal_"
+  const separatorIdx = withoutPrefix.lastIndexOf('_');
+  if (separatorIdx === -1) return { status: 'failed', error: 'Invalid FAL task ID' };
+
+  // The model is URL-encoded and may contain underscores, so we need the request_id which is the last segment
+  // FAL request_ids are UUIDs like "abc-def-123"
+  // Let's split differently: find the request_id (UUID pattern) at the end
+  const parts = withoutPrefix.split('_');
+  // Request ID is the last part (UUID)
+  const requestId = parts[parts.length - 1];
+  // Model is everything before that
+  const model = decodeURIComponent(parts.slice(0, -1).join('_'));
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const statusResult: any = await (fal as any).queue.status(model, {
+      requestId,
+      logs: true,
+    });
+
+    const queueStatus = statusResult?.status;
+
+    if (queueStatus === 'COMPLETED') {
+      // Fetch the actual result
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result: any = await (fal as any).queue.result(model, { requestId });
+      const videoUrl = result?.video?.url
+        || result?.data?.video?.url
+        || result?.output?.video?.url
+        || '';
+
+      if (videoUrl) {
+        return { status: 'completed', progress: 100, resultUrl: videoUrl };
+      }
+      return { status: 'completed', progress: 100, resultUrl: '', error: 'Video URL not found in response' };
     }
-    return { status: 'failed', error: 'No video URL in FAL response' };
+
+    if (queueStatus === 'FAILED' || queueStatus === 'CANCELLED') {
+      return { status: 'failed', error: statusResult?.error || 'FAL generation failed' };
+    }
+
+    // IN_QUEUE or IN_PROGRESS
+    const position = statusResult?.queue_position;
+    let progress = 60;
+    if (queueStatus === 'IN_QUEUE') progress = 40;
+    if (queueStatus === 'IN_PROGRESS') progress = 70;
+
+    return {
+      status: 'processing',
+      progress,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error checking FAL status';
+    console.error('[FAL] Status check error:', msg);
+    return { status: 'processing', progress: 60 };
   }
-  return { status: 'processing', progress: 70 };
 }
 
 // ========================================
@@ -245,7 +289,7 @@ export async function checkVideoStatus(taskId: string): Promise<{
   status: string; progress?: number; resultUrl?: string; error?: string;
 }> {
   if (taskId.startsWith('demo_')) return demoCheckStatus(taskId);
-  if (taskId.startsWith('fal_')) return falCheckStatus(taskId);
+  if (taskId.startsWith('fal_')) return await falCheckStatus(taskId);
   return klingDirectCheck(taskId);
 }
 
