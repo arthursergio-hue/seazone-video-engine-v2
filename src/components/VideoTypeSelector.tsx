@@ -12,7 +12,7 @@ interface Props {
 const videoTypes: { value: VideoType; label: string; description: string }[] = [
   { value: 'fachada', label: 'Fachada', description: 'Animação cinematográfica da fachada do empreendimento' },
   { value: 'interior', label: 'Interior', description: 'Tour pelos ambientes internos com movimento suave' },
-  { value: 'construcao', label: 'Construção', description: 'Visualização dramática do progresso da obra' },
+  { value: 'construcao', label: 'Construção', description: 'Vídeo time-lapse da obra' },
   { value: 'unidade', label: 'Unidade', description: 'Walkthrough elegante por uma unidade específica' },
 ];
 
