@@ -130,6 +130,7 @@ export default function GerarPage() {
   }, [videoType, project, categoryImages, isConstructionFromFacade, loading]);
 
   const pollStartRef = { current: 0 };
+  const generationContextRef = { current: null as Record<string, unknown> | null };
 
   const pollStatus = useCallback(async (id: string, apiId?: string) => {
     if (pollStartRef.current === 0) pollStartRef.current = Date.now();
@@ -143,9 +144,16 @@ export default function GerarPage() {
       if (data.status === 'completed') {
         setStatus('completed');
         setProgress(100);
-        // Keep existing logs + add completion
         setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: 'Vídeo gerado com sucesso!', progress: 100 }]);
-        localStorage.setItem('lastJobResult', JSON.stringify(data));
+
+        // Save enriched result with context captured before generation started
+        const ctx = generationContextRef.current || {};
+        const enrichedResult = {
+          ...data,
+          ...ctx,
+          completedAt: new Date().toISOString(),
+        };
+        localStorage.setItem('lastJobResult', JSON.stringify(enrichedResult));
         setGenerating(false);
       } else if (data.status === 'failed') {
         setStatus('failed');
@@ -259,6 +267,33 @@ export default function GerarPage() {
       setStatus(data.status);
       setProgress(data.progress);
       setLogs(data.logs || []);
+
+      // Save full context for the results page
+      const refCat: ImageCategory = isConstructionFromFacade ? 'fachada' : (videoType === 'unidade' ? 'interior' : videoType);
+      generationContextRef.current = {
+        provider,
+        providerName: data.providerName || providerName || provider,
+        videoType,
+        aspectRatio,
+        constructionFromFacade: isConstructionFromFacade,
+        presetId: activePresetId,
+        presetName: activePreset.name,
+        targetDuration: activePreset.targetDuration,
+        prompt: data.prompt,
+        strategy: data.strategy,
+        selectedImage: selectedImage ? {
+          id: selectedImage.id,
+          url: selectedImage.url,
+          filename: selectedImage.filename,
+          category: selectedImage.category,
+        } : null,
+        referenceImageCount: categoryImages[refCat]?.referenceImages.length || 0,
+        referenceImages: (categoryImages[refCat]?.referenceImages || []).map(img => ({
+          id: img.id, url: img.url, filename: img.filename,
+        })),
+        projectName: project?.name || '',
+        projectId: project?.id || '',
+      };
 
       pollStatus(data.jobId, receivedApiJobId);
     } catch {
