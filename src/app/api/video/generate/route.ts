@@ -45,6 +45,7 @@ export async function POST(request: NextRequest) {
     const { formattedPrompt } = promptBuilder.build(strategy.videoType, {
       preset: strategy.preset,
       constructionFromFacade: strategy.constructionFromFacade,
+      referenceImageCount: referenceImageUrls?.length || 0,
     });
 
     // Agent 3: Generation

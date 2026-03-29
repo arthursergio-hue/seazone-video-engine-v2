@@ -9,15 +9,17 @@ export class PromptBuilderAgent {
       preset?: OfficialPreset;
       empreendimento?: string;
       constructionFromFacade?: boolean;
+      referenceImageCount?: number;
     }
   ): { prompt: VideoPrompt; formattedPrompt: string } {
     const prompt = generatePrompt(videoType);
 
-    // If we have a preset, use the preset-based prompt builder
     if (options?.preset) {
       const presetPrompt = buildPresetPrompt(options.preset, {
         empreendimento: options.empreendimento,
         constructionFromFacade: options.constructionFromFacade,
+        multipleImages: (options.referenceImageCount || 0) > 0,
+        referenceImageCount: options.referenceImageCount,
       });
       prompt.text = presetPrompt;
       prompt.duration = options.preset.targetDuration;

@@ -217,11 +217,14 @@ const presetFachada: OfficialPreset = {
     'Câmera estável nos planos hero',
     'Drone suave no encerramento',
   ],
-  basePrompt: 'Cinematic close-up of modern architectural details — balconies, materials, textures, and facade elements beginning to catch the first artificial light. The camera pulls back as the sky transitions from golden sunset to deep blue twilight. Building lights activate progressively, revealing the full illuminated facade in a hero shot. Camera stabilizes for a clean frontal composition, then rises into a smooth aerial perspective showing the neighborhood at dusk. The sequence ends with a subtle, premium logo reveal on a dark elegant background with neutral white glow. Strong, sophisticated, memorable. Continuous movements, no excessive effects or bright glare.',
+  basePrompt: 'Cinematic close-up of modern architectural details — balconies, materials, textures, and facade elements. The camera smoothly pulls back revealing the full building facade. People walk naturally on the sidewalk, cars pass by on the street — realistic urban life. The sky transitions from golden sunset to deep blue twilight. Building lights turn on progressively, window by window, floor by floor — the facade comes alive at night. The fully illuminated building stands as a hero shot with warm interior lights glowing through the windows. Camera stabilizes for a clean frontal composition, then rises into a smooth aerial perspective showing the neighborhood at dusk. Strong, sophisticated, memorable. Continuous movements, no excessive effects or bright glare. When multiple facade images are provided, the camera should transition smoothly between different angles and perspectives of the same building.',
   directionNotes: [
     'Sempre usar logomarca oficial Seazone no final',
     'Revelação da marca deve ser sutil, premium e limpa',
     'A transição dia-noite é o momento mais importante do vídeo',
+    'Luzes acendendo progressivamente — janela por janela',
+    'Pessoas e carros devem parecer naturais, não genéricos',
+    'Se múltiplas imagens: transicionar entre ângulos diferentes do mesmo prédio',
   ],
   restrictions: [
     'Não usar brilho exagerado no logo',
@@ -401,7 +404,12 @@ export function buildPrompt(videoType: VideoType, customizations?: Partial<Video
   };
 }
 
-export function buildPresetPrompt(preset: OfficialPreset, context?: { empreendimento?: string; constructionFromFacade?: boolean }): string {
+export function buildPresetPrompt(preset: OfficialPreset, context?: {
+  empreendimento?: string;
+  constructionFromFacade?: boolean;
+  multipleImages?: boolean;
+  referenceImageCount?: number;
+}): string {
   let prompt = preset.basePrompt;
 
   if (context?.empreendimento) {
@@ -410,6 +418,10 @@ export function buildPresetPrompt(preset: OfficialPreset, context?: { empreendim
 
   if (context?.constructionFromFacade) {
     prompt += ' NOTE: This is a visual simulation based on the final facade image, not real construction footage.';
+  }
+
+  if (context?.multipleImages && (context.referenceImageCount || 0) > 0) {
+    prompt += ` IMPORTANT: Multiple reference images of the building are provided (${(context.referenceImageCount || 0) + 1} total). The video must use ALL provided images — transition smoothly between different angles and perspectives. Each image shows a real view of the building that should appear in the video. Do not invent views that are not in the reference images.`;
   }
 
   // Append global restrictions as negative guidance
