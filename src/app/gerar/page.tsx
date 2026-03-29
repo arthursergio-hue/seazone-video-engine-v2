@@ -129,24 +129,45 @@ export default function GerarPage() {
     setSelectedImage(bestImage);
   }, [videoType, project, categoryImages, isConstructionFromFacade, loading]);
 
+  const pollCountRef = { current: 0 };
+  const pollStartRef = { current: 0 };
+
   const pollStatus = useCallback(async (id: string, apiId?: string) => {
+    if (pollStartRef.current === 0) pollStartRef.current = Date.now();
+    pollCountRef.current++;
+
     try {
       let url = `/api/video/status?jobId=${id}`;
       if (apiId) url += `&apiJobId=${encodeURIComponent(apiId)}`;
       const res = await fetch(url);
       const data = await res.json();
 
-      setStatus(data.status);
-      setProgress(data.progress);
-      setLogs(data.logs || []);
-
       if (data.status === 'completed') {
+        setStatus('completed');
+        setProgress(100);
+        setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: 'Vídeo gerado com sucesso!', progress: 100 }]);
         localStorage.setItem('lastJobResult', JSON.stringify(data));
         setGenerating(false);
       } else if (data.status === 'failed') {
+        setStatus('failed');
+        setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: data.logs?.[0]?.message || 'Falha na geração', progress: 0 }]);
         setGenerating(false);
       } else {
-        setTimeout(() => pollStatus(id, apiId), 3000);
+        // Smooth progress: 70% → 95% over time (never reaches 100 until completed)
+        const elapsed = Date.now() - pollStartRef.current;
+        const maxProcessingTime = 5 * 60 * 1000; // 5 min expected max
+        const processingProgress = Math.min(95, 70 + (25 * elapsed / maxProcessingTime));
+        const roundedProgress = Math.round(processingProgress);
+
+        setStatus('processing');
+        setProgress(roundedProgress);
+
+        // Only add log on first poll, not repeated
+        if (pollCountRef.current === 1) {
+          setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: 'Gerando vídeo com IA...', progress: 70 }]);
+        }
+
+        setTimeout(() => pollStatus(id, apiId), 4000);
       }
     } catch {
       setTimeout(() => pollStatus(id, apiId), 5000);
