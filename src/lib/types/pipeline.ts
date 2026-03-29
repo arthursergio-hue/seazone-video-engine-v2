@@ -27,6 +27,7 @@ export interface PipelineStage {
   status: StageStatus;
   version: number;
   falRequestId?: string;
+  falModel?: string;
   generatedAt?: string;
   error?: string;
 }

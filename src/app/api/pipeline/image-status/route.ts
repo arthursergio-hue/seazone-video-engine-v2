@@ -5,6 +5,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const requestId = searchParams.get('requestId');
+    const model = searchParams.get('model');
 
     if (!requestId) {
       return NextResponse.json(
@@ -13,7 +14,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const result = await checkImageStatus(requestId);
+    const result = await checkImageStatus(requestId, model || undefined);
 
     return NextResponse.json({
       requestId,

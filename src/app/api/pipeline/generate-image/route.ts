@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateImage } from '@/lib/services/imageGenClient';
+import { generateImage, ImageModelId } from '@/lib/services/imageGenClient';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { imageUrl, prompt, strength, stageOrder } = body;
+    const { imageUrl, prompt, strength, stageOrder, modelId } = body;
 
     if (!imageUrl || !prompt) {
       return NextResponse.json(
@@ -14,6 +14,7 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`[Pipeline] Generating image for stage ${stageOrder}...`);
+    console.log(`[Pipeline] Model: ${modelId || 'default'}`);
     console.log(`[Pipeline] Prompt: ${prompt.substring(0, 100)}...`);
     console.log(`[Pipeline] Strength: ${strength}`);
 
@@ -21,13 +22,15 @@ export async function POST(request: NextRequest) {
       prompt,
       imageUrl,
       strength: strength || 0.8,
+      modelId: (modelId as ImageModelId) || undefined,
     });
 
-    console.log(`[Pipeline] Image generation submitted. RequestId: ${result.requestId}, Demo: ${result.isDemo}`);
+    console.log(`[Pipeline] Image generation submitted. RequestId: ${result.requestId}, Model: ${result.model}, Demo: ${result.isDemo}`);
 
     return NextResponse.json({
       requestId: result.requestId,
       isDemo: result.isDemo,
+      model: result.model,
       status: 'processing',
     });
   } catch (err) {

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pipeline, PipelineStage } from '@/lib/types/pipeline';
+import { IMAGE_MODELS, ImageModelId, DEFAULT_IMAGE_MODEL } from '@/lib/imageModels';
 import StageCard from './StageCard';
 
 interface Props {
@@ -11,7 +12,11 @@ interface Props {
 
 export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
   const [generatingStages, setGeneratingStages] = useState<Set<string>>(new Set());
+  const [selectedModel, setSelectedModel] = useState<ImageModelId>(DEFAULT_IMAGE_MODEL);
+  const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
   const pollingRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  // Track which FAL model was used for each requestId (for status polling)
+  const modelMapRef = useRef<Map<string, string>>(new Map());
 
   const allApproved = pipeline.stages.every((s) => s.status === 'approved');
   const hasGenerating = pipeline.stages.some((s) => s.status === 'generating');
@@ -26,15 +31,27 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
     };
   }, []);
 
+  // Close lightbox on escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightbox(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   // Poll status for a generating stage
   const pollStageStatus = useCallback(
     async (stageId: string, requestId: string) => {
       try {
-        const res = await fetch(`/api/pipeline/image-status?requestId=${encodeURIComponent(requestId)}`);
+        const falModel = modelMapRef.current.get(requestId) || '';
+        let url = `/api/pipeline/image-status?requestId=${encodeURIComponent(requestId)}`;
+        if (falModel) url += `&model=${encodeURIComponent(falModel)}`;
+
+        const res = await fetch(url);
         const data = await res.json();
 
         if (data.status === 'completed' && data.imageUrl) {
-          // Update stage as generated
           const updated = { ...pipeline };
           updated.stages = updated.stages.map((s) =>
             s.id === stageId
@@ -48,7 +65,6 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
           );
           updated.updatedAt = new Date().toISOString();
 
-          // Check if all non-original stages are now generated or approved
           const allDone = updated.stages.every(
             (s) => s.isOriginal || s.status === 'generated' || s.status === 'approved'
           );
@@ -62,6 +78,7 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
             return next;
           });
           pollingRef.current.delete(stageId);
+          modelMapRef.current.delete(requestId);
           onPipelineUpdate(updated);
         } else if (data.status === 'failed') {
           const updated = { ...pipeline };
@@ -77,9 +94,9 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
             return next;
           });
           pollingRef.current.delete(stageId);
+          modelMapRef.current.delete(requestId);
           onPipelineUpdate(updated);
         } else {
-          // Still processing, poll again
           const timer = setTimeout(() => pollStageStatus(stageId, requestId), 4000);
           pollingRef.current.set(stageId, timer);
         }
@@ -96,7 +113,6 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
   const generateStageImage = useCallback(
     async (stage: PipelineStage) => {
       try {
-        // Mark as generating
         const updated = { ...pipeline };
         updated.stages = updated.stages.map((s) =>
           s.id === stage.id ? { ...s, status: 'generating' as const, error: undefined } : s
@@ -113,6 +129,7 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
             prompt: stage.prompt,
             strength: stage.strength,
             stageOrder: stage.order,
+            modelId: selectedModel,
           }),
         });
 
@@ -122,10 +139,14 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
           throw new Error(data.error);
         }
 
-        // Store requestId and start polling
+        // Track which FAL model this requestId uses
+        if (data.model) {
+          modelMapRef.current.set(data.requestId, data.model);
+        }
+
         const updated2 = { ...pipeline };
         updated2.stages = updated2.stages.map((s) =>
-          s.id === stage.id ? { ...s, falRequestId: data.requestId } : s
+          s.id === stage.id ? { ...s, falRequestId: data.requestId, falModel: data.model } : s
         );
         updated2.updatedAt = new Date().toISOString();
         onPipelineUpdate(updated2);
@@ -148,7 +169,7 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
         onPipelineUpdate(updated);
       }
     },
-    [pipeline, onPipelineUpdate, pollStageStatus]
+    [pipeline, onPipelineUpdate, pollStageStatus, selectedModel]
   );
 
   // Generate all pending stages
@@ -196,11 +217,23 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
       updated.updatedAt = new Date().toISOString();
       onPipelineUpdate(updated);
 
-      // Auto-generate the regenerated stage
       const updatedStage = updated.stages.find((s) => s.id === stageId)!;
       generateStageImage(updatedStage);
     },
     [pipeline, onPipelineUpdate, generateStageImage]
+  );
+
+  // Update prompt for a stage
+  const handlePromptChange = useCallback(
+    (stageId: string, newPrompt: string) => {
+      const updated = { ...pipeline };
+      updated.stages = updated.stages.map((s) =>
+        s.id === stageId ? { ...s, prompt: newPrompt } : s
+      );
+      updated.updatedAt = new Date().toISOString();
+      onPipelineUpdate(updated);
+    },
+    [pipeline, onPipelineUpdate]
   );
 
   // Approve all generated stages
@@ -220,6 +253,32 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
 
   return (
     <div className="space-y-4">
+      {/* Image Model Selector */}
+      {nonOriginalStages.length > 0 && (
+        <div className="bg-gray-900 rounded-lg p-4 space-y-2">
+          <h3 className="text-white text-sm font-medium">Motor de Geracao de Imagem</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {IMAGE_MODELS.map((model) => (
+              <button
+                key={model.id}
+                onClick={() => setSelectedModel(model.id)}
+                className={`text-left p-2 rounded border transition text-xs ${
+                  selectedModel === model.id
+                    ? 'border-blue-500 bg-blue-500/10'
+                    : 'border-gray-700 bg-gray-800 hover:border-gray-500'
+                }`}
+              >
+                <span className="text-white font-medium block">{model.name}</span>
+                <span className="text-gray-400 block mt-0.5">{model.description}</span>
+                {model.supportsImageToImage && (
+                  <span className="text-green-400 text-[10px] mt-1 inline-block">img2img</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-white">
           Estagios ({pipeline.stages.filter((s) => s.status === 'approved').length}/
@@ -255,12 +314,14 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
               stage={stage}
               onApprove={handleApprove}
               onRegenerate={handleRegenerate}
+              onPromptChange={handlePromptChange}
+              onImageClick={(url, name) => setLightbox({ url, name })}
             />
           ))}
       </div>
 
       {/* Video order indicator */}
-      <div className="flex items-center gap-1 text-xs text-gray-500">
+      <div className="flex items-center gap-1 text-xs text-gray-500 flex-wrap">
         <span>Ordem do video:</span>
         {[...pipeline.stages]
           .sort((a, b) => b.order - a.order)
@@ -271,6 +332,29 @@ export default function PipelineView({ pipeline, onPipelineUpdate }: Props) {
             </span>
           ))}
       </div>
+
+      {/* Lightbox */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <div className="relative max-w-5xl max-h-[90vh] w-full" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute -top-10 right-0 text-white text-sm hover:text-gray-300 transition"
+            >
+              Fechar (ESC)
+            </button>
+            <p className="absolute -top-10 left-0 text-white text-sm">{lightbox.name}</p>
+            <img
+              src={lightbox.url}
+              alt={lightbox.name}
+              className="w-full h-full object-contain rounded-lg"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,10 +1,8 @@
 import { fal } from '@fal-ai/client';
+import { ImageModelId, ImageModelInfo, IMAGE_MODELS, getImageModel, DEFAULT_IMAGE_MODEL } from '../imageModels';
 
-// ========================================
-// Image Generation Client (FAL img2img)
-// ========================================
-
-const IMAGE_MODEL = 'fal-ai/flux/dev/image-to-image';
+export type { ImageModelId, ImageModelInfo };
+export { DEFAULT_IMAGE_MODEL, getImageModel };
 
 function getFalKey(): string | null {
   return process.env.FAL_KEY || null;
@@ -14,26 +12,37 @@ function getFalKey(): string | null {
 // FAL Image Generation
 // ========================================
 
-async function falGenerateImage(params: {
-  prompt: string;
-  imageUrl: string;
-  strength: number;
-}): Promise<{ requestId: string }> {
+async function falGenerateImage(
+  model: ImageModelInfo,
+  params: {
+    prompt: string;
+    imageUrl: string;
+    strength: number;
+  }
+): Promise<{ requestId: string; model: string }> {
   const falKey = getFalKey();
   if (!falKey) throw new Error('FAL_KEY not configured');
 
   fal.config({ credentials: falKey });
 
+  // Build input based on model capabilities
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result: any = await (fal as any).queue.submit(IMAGE_MODEL, {
-    input: {
-      prompt: params.prompt,
-      image_url: params.imageUrl,
-      strength: params.strength,
-      num_images: 1,
-      enable_safety_checker: false,
-    },
-  });
+  const input: any = {
+    prompt: params.prompt,
+    num_images: 1,
+    enable_safety_checker: false,
+  };
+
+  if (model.supportsImageToImage) {
+    input.image_url = params.imageUrl;
+    input.strength = params.strength;
+  } else {
+    // Text-to-image models: embed reference in prompt
+    input.image_url = params.imageUrl;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: any = await (fal as any).queue.submit(model.falModel, { input });
 
   const requestId = result?.request_id;
   if (!requestId) {
@@ -41,10 +50,13 @@ async function falGenerateImage(params: {
     throw new Error('FAL did not return a request_id for image generation');
   }
 
-  return { requestId };
+  return { requestId, model: model.falModel };
 }
 
-async function falCheckImageStatus(requestId: string): Promise<{
+async function falCheckImageStatus(
+  requestId: string,
+  falModel: string
+): Promise<{
   status: string;
   imageUrl?: string;
   error?: string;
@@ -56,7 +68,7 @@ async function falCheckImageStatus(requestId: string): Promise<{
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const statusResult: any = await (fal as any).queue.status(IMAGE_MODEL, {
+    const statusResult: any = await (fal as any).queue.status(falModel, {
       requestId,
       logs: true,
     });
@@ -65,7 +77,7 @@ async function falCheckImageStatus(requestId: string): Promise<{
 
     if (queueStatus === 'COMPLETED') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result: any = await (fal as any).queue.result(IMAGE_MODEL, { requestId });
+      const result: any = await (fal as any).queue.result(falModel, { requestId });
       const imageUrl =
         result?.images?.[0]?.url ||
         result?.data?.images?.[0]?.url ||
@@ -82,7 +94,6 @@ async function falCheckImageStatus(requestId: string): Promise<{
       return { status: 'failed', error: statusResult?.error || 'Image generation failed' };
     }
 
-    // IN_QUEUE or IN_PROGRESS
     return { status: 'processing' };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error checking image status';
@@ -95,9 +106,9 @@ async function falCheckImageStatus(requestId: string): Promise<{
 // Demo Mode
 // ========================================
 
-async function demoGenerateImage(): Promise<{ requestId: string }> {
+async function demoGenerateImage(): Promise<{ requestId: string; model: string }> {
   await new Promise((r) => setTimeout(r, 300));
-  return { requestId: `demo_img_${Date.now()}` };
+  return { requestId: `demo_img_${Date.now()}`, model: 'demo' };
 }
 
 function demoCheckImageStatus(requestId: string): {
@@ -122,20 +133,24 @@ export async function generateImage(params: {
   prompt: string;
   imageUrl: string;
   strength: number;
-}): Promise<{ requestId: string; isDemo: boolean }> {
+  modelId?: ImageModelId;
+}): Promise<{ requestId: string; isDemo: boolean; model: string }> {
   const falKey = getFalKey();
 
   if (falKey) {
-    const result = await falGenerateImage(params);
+    const model = getImageModel(params.modelId || DEFAULT_IMAGE_MODEL);
+    const result = await falGenerateImage(model, params);
     return { ...result, isDemo: false };
   }
 
-  // Fallback to demo
   const result = await demoGenerateImage();
   return { ...result, isDemo: true };
 }
 
-export async function checkImageStatus(requestId: string): Promise<{
+export async function checkImageStatus(
+  requestId: string,
+  falModel?: string
+): Promise<{
   status: string;
   imageUrl?: string;
   error?: string;
@@ -143,5 +158,7 @@ export async function checkImageStatus(requestId: string): Promise<{
   if (requestId.startsWith('demo_img_')) {
     return demoCheckImageStatus(requestId);
   }
-  return falCheckImageStatus(requestId);
+  // Use provided model or default
+  const model = falModel || IMAGE_MODELS[0].falModel;
+  return falCheckImageStatus(requestId, model);
 }
