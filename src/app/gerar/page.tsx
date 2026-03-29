@@ -2,12 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import VideoTypeSelector from '@/components/VideoTypeSelector';
-import ProgressTracker from '@/components/ProgressTracker';
 import {
-  VideoType,
-  AspectRatio,
-  UploadedImage,
   VideoProject,
   VideoLog,
   VideoStatus,
@@ -15,10 +10,16 @@ import {
   ProjectImages,
   createEmptyProjectImages,
   getAllImagesFromCategory,
+  UploadedImage,
 } from '@/lib/types';
-import { officialPresets, VideoPreset } from '@/lib/prompts/templates';
+import { Pipeline, PipelineType, PipelinePhase } from '@/lib/types/pipeline';
+import { createPipelineStages, createDroneStages } from '@/lib/prompts/imagePrompts';
 import { loadAllImages, getImageData } from '@/lib/storage';
+import PipelineTypeSelector from '@/components/pipeline/PipelineTypeSelector';
+import PipelineView from '@/components/pipeline/PipelineView';
+import PipelineProgress from '@/components/pipeline/PipelineProgress';
 import ProviderSelector from '@/components/ProviderSelector';
+import ProgressTracker from '@/components/ProgressTracker';
 
 function compressImage(base64: string, maxWidth = 1024, quality = 0.8): Promise<string> {
   return new Promise((resolve) => {
@@ -42,43 +43,31 @@ function compressImage(base64: string, maxWidth = 1024, quality = 0.8): Promise<
   });
 }
 
-function getPresetId(videoType: VideoType, constructionFromFacade: boolean): VideoPreset {
-  if (videoType === 'construcao' && constructionFromFacade) return 'construction_from_facade';
-  const mapping: Record<VideoType, VideoPreset> = {
-    fachada: 'video_fachada_marca',
-    interior: 'video_rooftop_unidade',
-    construcao: 'video_localizacao_contexto',
-    unidade: 'video_rooftop_unidade',
-  };
-  return mapping[videoType];
-}
-
 export default function GerarPage() {
   const router = useRouter();
   const [project, setProject] = useState<VideoProject | null>(null);
   const [categoryImages, setCategoryImages] = useState<ProjectImages>(createEmptyProjectImages());
   const [imageDataMap, setImageDataMap] = useState<Record<string, string>>({});
-  const [videoType, setVideoType] = useState<VideoType>('fachada');
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
-  const [selectedImage, setSelectedImage] = useState<UploadedImage | null>(null);
-  const [generating, setGenerating] = useState(false);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<VideoStatus>('pending');
-  const [progress, setProgress] = useState(0);
-  const [logs, setLogs] = useState<VideoLog[]>([]);
   const [loading, setLoading] = useState(true);
-  const [demoMode, setDemoMode] = useState(false);
-  const [apiJobId, setApiJobId] = useState<string | null>(null);
+
+  // Pipeline state
+  const [pipelineType, setPipelineType] = useState<PipelineType | null>(null);
+  const [pipeline, setPipeline] = useState<Pipeline | null>(null);
+
+  // Video generation state
   const [provider, setProvider] = useState<string>('fal_kling');
-  const [providerName, setProviderName] = useState<string>('');
+  const [aspectRatio, setAspectRatio] = useState<string>('9:16');
+  const [videoGenerating, setVideoGenerating] = useState(false);
+  const [videoStatus, setVideoStatus] = useState<VideoStatus>('pending');
+  const [videoProgress, setVideoProgress] = useState(0);
+  const [videoLogs, setVideoLogs] = useState<VideoLog[]>([]);
+  const pollStartRef = { current: 0 };
 
-  const constructionHasImages = getAllImagesFromCategory(categoryImages.construcao).length > 0;
-  const facadeHasImages = getAllImagesFromCategory(categoryImages.fachada).length > 0;
-  const isConstructionFromFacade = videoType === 'construcao' && !constructionHasImages && facadeHasImages;
+  // Derived
+  const hasMultipleImages = project ? (project.images?.length || 0) > 1 : false;
+  const allApproved = pipeline?.stages.every((s) => s.status === 'approved') || false;
 
-  const activePresetId = getPresetId(videoType, isConstructionFromFacade);
-  const activePreset = officialPresets[activePresetId];
-
+  // Load project
   useEffect(() => {
     async function init() {
       const stored = localStorage.getItem('currentProject');
@@ -93,15 +82,22 @@ export default function GerarPage() {
       const catImgs = p.categoryImages || createEmptyProjectImages();
       setCategoryImages(catImgs);
 
-      // Load all image data from IndexedDB
-      const allIds = (p.images || []).map(img => img.id);
+      const allIds = (p.images || []).map((img) => img.id);
       if (allIds.length > 0) {
         const data = await loadAllImages(allIds);
         setImageDataMap(data);
       }
 
-      if (p.images && p.images.length > 0) {
-        setSelectedImage(p.images[0]);
+      // Load existing pipeline if any
+      const savedPipeline = localStorage.getItem('currentPipeline');
+      if (savedPipeline) {
+        try {
+          const pl = JSON.parse(savedPipeline) as Pipeline;
+          setPipeline(pl);
+          setPipelineType(pl.type);
+        } catch {
+          // ignore
+        }
       }
 
       setLoading(false);
@@ -109,202 +105,257 @@ export default function GerarPage() {
     init();
   }, []);
 
-  // Auto-select best image when videoType changes
-  useEffect(() => {
-    if (!project || loading) return;
+  // Resolve image URL (prefer FAL public URL, fallback to upload)
+  const resolveImageUrl = useCallback(
+    async (img: UploadedImage): Promise<string | null> => {
+      if (img.url && img.url.startsWith('http')) return img.url;
 
-    const relevantCategory: ImageCategory = videoType === 'unidade' ? 'interior' : videoType;
-    let bestImage: UploadedImage | null = null;
+      const base64Data = imageDataMap[img.id] || (await getImageData(img.id));
+      if (!base64Data) return null;
 
-    if (isConstructionFromFacade) {
-      bestImage = categoryImages.fachada.primaryImage;
-    } else {
-      bestImage = categoryImages[relevantCategory]?.primaryImage || null;
-    }
-
-    if (!bestImage && project.images.length > 0) {
-      bestImage = project.images[0];
-    }
-
-    setSelectedImage(bestImage);
-  }, [videoType, project, categoryImages, isConstructionFromFacade, loading]);
-
-  const pollStartRef = { current: 0 };
-  const generationContextRef = { current: null as Record<string, unknown> | null };
-
-  const pollStatus = useCallback(async (id: string, apiId?: string) => {
-    if (pollStartRef.current === 0) pollStartRef.current = Date.now();
-
-    try {
-      let url = `/api/video/status?jobId=${id}`;
-      if (apiId) url += `&apiJobId=${encodeURIComponent(apiId)}`;
-      const res = await fetch(url);
-      const data = await res.json();
-
-      if (data.status === 'completed') {
-        setStatus('completed');
-        setProgress(100);
-        setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: 'Vídeo gerado com sucesso!', progress: 100 }]);
-
-        // Save enriched result with context captured before generation started
-        const ctx = generationContextRef.current || {};
-        const enrichedResult = {
-          ...data,
-          ...ctx,
-          completedAt: new Date().toISOString(),
-        };
-        localStorage.setItem('lastJobResult', JSON.stringify(enrichedResult));
-        setGenerating(false);
-      } else if (data.status === 'failed') {
-        setStatus('failed');
-        setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: data.logs?.[0]?.message || 'Falha na geração', progress: 0 }]);
-        setGenerating(false);
-      } else {
-        // Smooth progress: 70% → 95% over time
-        const elapsed = Date.now() - pollStartRef.current;
-        const maxTime = 5 * 60 * 1000;
-        const smoothProgress = Math.round(Math.min(95, 70 + (25 * elapsed / maxTime)));
-
-        setStatus('processing');
-        setProgress(smoothProgress);
-
-        setTimeout(() => pollStatus(id, apiId), 4000);
-      }
-    } catch {
-      setTimeout(() => pollStatus(id, apiId), 5000);
-    }
-  }, []);
-
-  async function handleGenerate() {
-    if (!project || !selectedImage) return;
-
-    setGenerating(true);
-    setStatus('pending');
-    setProgress(0);
-    setLogs([]);
-    setDemoMode(false);
-
-    const relevantCategory: ImageCategory = isConstructionFromFacade
-      ? 'fachada'
-      : (videoType === 'unidade' ? 'interior' : videoType);
-
-    // Resolve image URL: prefer FAL public URL, fallback to uploading from IndexedDB
-    let resolvedImageUrl = selectedImage.url;
-
-    if (resolvedImageUrl && resolvedImageUrl.startsWith('http')) {
-      // Already a public URL (uploaded to FAL storage) — good to go
-    } else {
-      // Need to get from IndexedDB and upload to FAL storage
-      const base64Data = imageDataMap[selectedImage.id] || await getImageData(selectedImage.id);
-      if (!base64Data) {
-        setStatus('failed');
-        setLogs([{ timestamp: new Date().toISOString(), message: 'Erro: imagem não encontrada. Faça upload novamente.', progress: 0 }]);
-        setGenerating(false);
-        return;
-      }
-
-      // Compress and upload to FAL storage to get a public URL
-      setLogs([{ timestamp: new Date().toISOString(), message: 'Comprimindo e enviando imagem...', progress: 5 }]);
       try {
         const compressed = await compressImage(base64Data, 1024, 0.85);
         const uploadRes = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: compressed, filename: selectedImage.filename, category: selectedImage.category }),
+          body: JSON.stringify({ image: compressed, filename: img.filename, category: img.category }),
         });
         const uploadData = await uploadRes.json();
         if (uploadData.url && uploadData.url.startsWith('http')) {
-          resolvedImageUrl = uploadData.url;
-        } else {
-          resolvedImageUrl = base64Data; // fallback to base64
+          return uploadData.url;
         }
       } catch {
-        resolvedImageUrl = base64Data; // fallback to base64
+        // fallback
       }
-    }
+      return base64Data;
+    },
+    [imageDataMap]
+  );
 
-    if (!resolvedImageUrl) {
-      setStatus('failed');
-      setLogs([{ timestamp: new Date().toISOString(), message: 'Erro: não foi possível processar a imagem.', progress: 0 }]);
-      setGenerating(false);
-      return;
-    }
+  // Select pipeline type and create pipeline
+  const handleTypeSelect = useCallback(
+    async (type: PipelineType) => {
+      setPipelineType(type);
+
+      if (!project) return;
+
+      if (type === 'drone') {
+        // Drone: use all uploaded images as takes
+        const allImages = project.images || [];
+        const imageUrls: string[] = [];
+        for (const img of allImages) {
+          const url = await resolveImageUrl(img);
+          if (url) imageUrls.push(url);
+        }
+        const stages = createDroneStages(imageUrls);
+        const pl: Pipeline = {
+          id: `pipeline_${Date.now()}`,
+          type,
+          projectId: project.id,
+          sourceImageUrl: imageUrls[0] || '',
+          stages,
+          phase: 'approve_images', // Drone stages are all original/approved
+          videoStatus: 'pending',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        setPipeline(pl);
+        localStorage.setItem('currentPipeline', JSON.stringify(pl));
+        return;
+      }
+
+      // Construction or Interior: find the primary image for that type
+      const category: ImageCategory = type === 'construction' ? 'fachada' : 'interior';
+      const primaryImg = categoryImages[category]?.primaryImage;
+
+      if (!primaryImg) {
+        return;
+      }
+
+      const sourceUrl = await resolveImageUrl(primaryImg);
+      if (!sourceUrl) return;
+
+      const stages = createPipelineStages(type, sourceUrl);
+      const pl: Pipeline = {
+        id: `pipeline_${Date.now()}`,
+        type,
+        projectId: project.id,
+        sourceImageUrl: sourceUrl,
+        stages,
+        phase: 'select_type',
+        videoStatus: 'pending',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setPipeline(pl);
+      localStorage.setItem('currentPipeline', JSON.stringify(pl));
+    },
+    [project, categoryImages, resolveImageUrl]
+  );
+
+  // Update pipeline (from PipelineView)
+  const handlePipelineUpdate = useCallback((updated: Pipeline) => {
+    setPipeline(updated);
+    localStorage.setItem('currentPipeline', JSON.stringify(updated));
+  }, []);
+
+  // Poll video status
+  const pollVideoStatus = useCallback(
+    async (jobId: string, apiJobId: string) => {
+      if (pollStartRef.current === 0) pollStartRef.current = Date.now();
+
+      try {
+        let url = `/api/video/status?jobId=${jobId}`;
+        if (apiJobId) url += `&apiJobId=${encodeURIComponent(apiJobId)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.status === 'completed') {
+          setVideoStatus('completed');
+          setVideoProgress(100);
+          setVideoLogs((prev) => [
+            ...prev,
+            { timestamp: new Date().toISOString(), message: 'Video gerado com sucesso!', progress: 100 },
+          ]);
+          setVideoGenerating(false);
+
+          // Update pipeline
+          if (pipeline) {
+            const updated = {
+              ...pipeline,
+              videoStatus: 'completed' as const,
+              videoUrl: data.resultUrl,
+              phase: 'completed' as PipelinePhase,
+              updatedAt: new Date().toISOString(),
+            };
+            setPipeline(updated);
+            localStorage.setItem('currentPipeline', JSON.stringify(updated));
+
+            // Save result for resultados page
+            localStorage.setItem(
+              'lastJobResult',
+              JSON.stringify({
+                ...data,
+                provider,
+                providerName: provider,
+                videoType: pipeline.type,
+                aspectRatio,
+                pipelineType: pipeline.type,
+                pipelineStages: pipeline.stages,
+                projectName: project?.name || '',
+                projectId: project?.id || '',
+                prompt: pipeline.videoPrompt,
+                completedAt: new Date().toISOString(),
+              })
+            );
+          }
+        } else if (data.status === 'failed') {
+          setVideoStatus('failed');
+          setVideoLogs((prev) => [
+            ...prev,
+            { timestamp: new Date().toISOString(), message: data.error || 'Falha na geracao', progress: 0 },
+          ]);
+          setVideoGenerating(false);
+
+          if (pipeline) {
+            const updated = { ...pipeline, videoStatus: 'failed' as const, updatedAt: new Date().toISOString() };
+            setPipeline(updated);
+            localStorage.setItem('currentPipeline', JSON.stringify(updated));
+          }
+        } else {
+          const elapsed = Date.now() - pollStartRef.current;
+          const maxTime = 5 * 60 * 1000;
+          const smoothProgress = Math.round(Math.min(95, 70 + (25 * elapsed) / maxTime));
+          setVideoStatus('processing');
+          setVideoProgress(smoothProgress);
+          setTimeout(() => pollVideoStatus(jobId, apiJobId), 4000);
+        }
+      } catch {
+        setTimeout(() => pollVideoStatus(jobId, apiJobId), 5000);
+      }
+    },
+    [pipeline, provider, aspectRatio, project]
+  );
+
+  // Generate video from approved stages
+  const handleGenerateVideo = useCallback(async () => {
+    if (!pipeline || !allApproved) return;
+
+    setVideoGenerating(true);
+    setVideoStatus('pending');
+    setVideoProgress(0);
+    setVideoLogs([]);
+    pollStartRef.current = 0;
+
+    const updated = {
+      ...pipeline,
+      phase: 'generate_video' as PipelinePhase,
+      videoStatus: 'generating' as const,
+      videoProvider: provider,
+      videoAspectRatio: aspectRatio,
+      updatedAt: new Date().toISOString(),
+    };
+    setPipeline(updated);
+    localStorage.setItem('currentPipeline', JSON.stringify(updated));
 
     try {
-      const res = await fetch('/api/video/generate', {
+      const stages = pipeline.stages
+        .filter((s) => s.imageUrl)
+        .map((s) => ({ order: s.order, imageUrl: s.imageUrl! }));
+
+      const res = await fetch('/api/pipeline/generate-video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          projectId: project.id,
-          imageUrl: resolvedImageUrl,
-          imageCategory: isConstructionFromFacade ? 'fachada' : relevantCategory,
-          videoType,
-          aspectRatio,
-          constructionFromFacade: isConstructionFromFacade,
+          stages,
+          pipelineType: pipeline.type,
           provider,
+          aspectRatio,
+          projectName: project?.name,
         }),
       });
 
       const data = await res.json();
 
-      if (!res.ok) {
-        setStatus('failed');
-        setLogs([{ timestamp: new Date().toISOString(), message: data.error, progress: 0 }]);
-        setGenerating(false);
-        return;
+      if (data.error) {
+        throw new Error(data.error);
       }
 
-      if (data.demoMode) {
-        setDemoMode(true);
-      }
-      if (data.providerName) {
-        setProviderName(data.providerName);
-      }
-
-      const receivedApiJobId = data.apiJobId || null;
-      setApiJobId(receivedApiJobId);
-      setJobId(data.jobId);
-      setStatus(data.status);
-      setProgress(data.progress);
-      setLogs(data.logs || []);
-
-      // Save full context for the results page
-      const refCat: ImageCategory = isConstructionFromFacade ? 'fachada' : (videoType === 'unidade' ? 'interior' : videoType);
-      generationContextRef.current = {
-        provider,
-        providerName: data.providerName || providerName || provider,
-        videoType,
-        aspectRatio,
-        constructionFromFacade: isConstructionFromFacade,
-        presetId: activePresetId,
-        presetName: activePreset.name,
-        targetDuration: activePreset.targetDuration,
-        prompt: data.prompt,
-        strategy: data.strategy,
-        selectedImage: selectedImage ? {
-          id: selectedImage.id,
-          url: selectedImage.url,
-          filename: selectedImage.filename,
-          category: selectedImage.category,
-        } : null,
-        referenceImageCount: categoryImages[refCat]?.referenceImages.length || 0,
-        referenceImages: (categoryImages[refCat]?.referenceImages || []).map(img => ({
-          id: img.id, url: img.url, filename: img.filename,
-        })),
-        projectName: project?.name || '',
-        projectId: project?.id || '',
+      const updated2 = {
+        ...updated,
+        videoJobId: data.jobId,
+        videoApiJobId: data.apiJobId,
+        videoPrompt: data.prompt,
+        updatedAt: new Date().toISOString(),
       };
+      setPipeline(updated2);
+      localStorage.setItem('currentPipeline', JSON.stringify(updated2));
 
-      pollStatus(data.jobId, receivedApiJobId);
-    } catch {
-      setStatus('failed');
-      setGenerating(false);
+      setVideoLogs([
+        { timestamp: new Date().toISOString(), message: `Gerando video (${provider})...`, progress: 10 },
+      ]);
+
+      pollVideoStatus(data.jobId, data.apiJobId);
+    } catch (err) {
+      setVideoStatus('failed');
+      setVideoLogs([
+        {
+          timestamp: new Date().toISOString(),
+          message: err instanceof Error ? err.message : 'Erro ao gerar video',
+          progress: 0,
+        },
+      ]);
+      setVideoGenerating(false);
     }
-  }
+  }, [pipeline, allApproved, provider, aspectRatio, project, pollVideoStatus]);
 
-  function getDisplayUrl(img: UploadedImage): string {
-    return imageDataMap[img.id] || img.url;
-  }
+  // Get source image display URL
+  const getSourceImagePreview = (): string | null => {
+    if (!pipeline?.sourceImageUrl) return null;
+    if (pipeline.sourceImageUrl.startsWith('http')) return pipeline.sourceImageUrl;
+    if (pipeline.sourceImageUrl.startsWith('data:')) return pipeline.sourceImageUrl;
+    return null;
+  };
 
   if (loading) {
     return (
@@ -326,134 +377,134 @@ export default function GerarPage() {
     );
   }
 
-  const refCategory: ImageCategory = isConstructionFromFacade ? 'fachada' : (videoType === 'unidade' ? 'interior' : videoType);
-  const refCount = categoryImages[refCategory]?.referenceImages.length || 0;
+  const currentPhase: PipelinePhase = pipeline?.phase || 'select_type';
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">Gerar Vídeo</h1>
+        <h1 className="text-2xl font-bold text-white">Pipeline de Geracao</h1>
         <p className="text-gray-400 mt-1">
           Projeto: <span className="text-white">{project.name}</span>
         </p>
       </div>
 
-      {/* Preset info */}
-      <div className="bg-gray-900 rounded-lg p-4 space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-white font-medium">Preset: {activePreset.name}</h3>
-          <span className="text-xs bg-blue-600/20 text-blue-400 px-2 py-1 rounded">
-            ~{activePreset.targetDuration}s
-          </span>
-        </div>
-        <p className="text-gray-400 text-sm">{activePreset.narrativeObjective}</p>
-        <p className="text-gray-500 text-xs">Tom: {activePreset.tone}</p>
-        {activePreset.scenes.length > 0 && (
-          <div className="mt-2">
-            <p className="text-gray-500 text-xs font-medium mb-1">Cenas ({activePreset.scenes.length}):</p>
-            <div className="flex flex-wrap gap-1">
-              {activePreset.scenes.map((scene, i) => (
-                <span key={i} className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">
-                  {scene.name} ({scene.duration}s)
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
+      {/* Pipeline progress bar */}
+      <PipelineProgress phase={currentPhase} />
 
-      {isConstructionFromFacade && (
-        <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 text-sm">
-          <p className="text-yellow-400 font-medium">Modo: Construção a partir da Fachada</p>
-          <p className="text-yellow-500/80 mt-1">
-            Simulação visual da evolução construtiva baseada na imagem da fachada.
-          </p>
+      {/* Step 1: Select pipeline type */}
+      <PipelineTypeSelector
+        selected={pipelineType}
+        onSelect={handleTypeSelect}
+        hasMultipleImages={hasMultipleImages}
+      />
+
+      {/* Source image preview */}
+      {pipeline && getSourceImagePreview() && pipelineType !== 'drone' && (
+        <div className="bg-gray-900 rounded-lg p-4">
+          <h3 className="text-white text-sm font-medium mb-2">Imagem de Origem</h3>
+          <img
+            src={getSourceImagePreview()!}
+            alt="Imagem de origem"
+            className="max-h-48 rounded-lg object-contain"
+          />
         </div>
       )}
 
-      {/* Image selection */}
-      {project.images.length > 0 && (
-        <div>
-          <h3 className="text-white font-medium mb-3">
-            Imagem base
-            {selectedImage && (
-              <span className="text-gray-500 text-sm ml-2">({selectedImage.category})</span>
-            )}
-          </h3>
-          <div className="flex gap-3 overflow-x-auto pb-2">
-            {project.images.map((img) => {
-              const displayUrl = getDisplayUrl(img);
-              return (
+      {/* No primary image warning */}
+      {pipelineType && !pipeline && pipelineType !== 'drone' && (
+        <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-3 text-sm">
+          <p className="text-yellow-400">
+            Nenhuma imagem primaria encontrada para a categoria{' '}
+            <strong>{pipelineType === 'construction' ? 'fachada' : 'interior'}</strong>.
+          </p>
+          <button
+            onClick={() => router.push('/upload')}
+            className="text-yellow-300 underline mt-1 text-xs"
+          >
+            Ir para upload
+          </button>
+        </div>
+      )}
+
+      {/* Step 2 & 3: Generate and approve images */}
+      {pipeline && pipeline.stages.length > 0 && (
+        <PipelineView pipeline={pipeline} onPipelineUpdate={handlePipelineUpdate} />
+      )}
+
+      {/* Step 4: Video generation (only when all approved) */}
+      {allApproved && pipeline && (
+        <div className="space-y-4 border-t border-gray-800 pt-6">
+          <h2 className="text-lg font-semibold text-white">Gerar Video</h2>
+          <p className="text-gray-400 text-sm">
+            Todas as imagens foram aprovadas. Configure e gere o video final.
+          </p>
+
+          <ProviderSelector selectedProvider={provider} onProviderChange={setProvider} />
+
+          {/* Aspect ratio */}
+          <div>
+            <h3 className="text-white text-sm font-medium mb-2">Formato</h3>
+            <div className="flex gap-2">
+              {(['9:16', '4:5', '16:9'] as const).map((ratio) => (
                 <button
-                  key={img.id}
-                  onClick={() => setSelectedImage(img)}
-                  className={`flex-shrink-0 rounded-lg overflow-hidden border-2 transition relative ${
-                    selectedImage?.id === img.id ? 'border-blue-500' : 'border-transparent'
+                  key={ratio}
+                  onClick={() => setAspectRatio(ratio)}
+                  className={`px-4 py-2 rounded text-sm transition ${
+                    aspectRatio === ratio
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
                   }`}
                 >
-                  {displayUrl && displayUrl.startsWith('data:') ? (
-                    <img src={displayUrl} alt={img.filename} className="w-24 h-24 object-cover" />
-                  ) : (
-                    <div className="w-24 h-24 bg-gray-800 flex items-center justify-center">
-                      <span className="text-gray-600 text-[10px]">...</span>
-                    </div>
-                  )}
-                  <span className="absolute bottom-0 left-0 right-0 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 text-center">
-                    {img.category}
+                  {ratio}
+                  <span className="text-xs text-gray-500 ml-1">
+                    {ratio === '9:16' ? 'Reels' : ratio === '4:5' ? 'Feed' : 'YouTube'}
                   </span>
                 </button>
-              );
-            })}
+              ))}
+            </div>
           </div>
-          {refCount > 0 && (
-            <p className="text-gray-500 text-xs mt-2">
-              + {refCount} imagem(ns) de referência serão usadas
-            </p>
+
+          <button
+            onClick={handleGenerateVideo}
+            disabled={videoGenerating || !allApproved}
+            className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-lg"
+          >
+            {videoGenerating ? 'Gerando video...' : 'Gerar Video Final'}
+          </button>
+
+          {(videoGenerating || videoStatus !== 'pending') && (
+            <ProgressTracker status={videoStatus} progress={videoProgress} logs={videoLogs} />
+          )}
+
+          {videoStatus === 'completed' && (
+            <button
+              onClick={() => router.push('/resultados')}
+              className="w-full bg-green-600 text-white py-2.5 rounded font-medium hover:bg-green-700 transition"
+            >
+              Ver Resultado
+            </button>
           )}
         </div>
       )}
 
-      <ProviderSelector
-        selectedProvider={provider}
-        onProviderChange={setProvider}
-      />
-
-      <VideoTypeSelector
-        selectedType={videoType}
-        selectedRatio={aspectRatio}
-        onTypeChange={setVideoType}
-        onRatioChange={setAspectRatio}
-      />
-
-      {demoMode && (
-        <div className="bg-purple-900/30 border border-purple-700 rounded-lg p-3 text-sm">
-          <p className="text-purple-400 font-medium">Modo Demo</p>
-          <p className="text-purple-500/80 mt-1">
-            KLING_API_KEY não configurada. Geração simulada com vídeo de teste.
-            Configure a variável de ambiente na Vercel para gerar vídeos reais.
-          </p>
+      {/* Reset pipeline */}
+      {pipeline && (
+        <div className="border-t border-gray-800 pt-4">
+          <button
+            onClick={() => {
+              setPipeline(null);
+              setPipelineType(null);
+              setVideoGenerating(false);
+              setVideoStatus('pending');
+              setVideoProgress(0);
+              setVideoLogs([]);
+              localStorage.removeItem('currentPipeline');
+            }}
+            className="text-gray-500 text-xs hover:text-gray-300 transition"
+          >
+            Resetar pipeline
+          </button>
         </div>
-      )}
-
-      <button
-        onClick={handleGenerate}
-        disabled={generating || !selectedImage}
-        className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed text-lg"
-      >
-        {generating ? `Gerando com ${providerName || provider}...` : `Gerar Vídeo — ${activePreset.name}`}
-      </button>
-
-      {(generating || status !== 'pending') && (
-        <ProgressTracker status={status} progress={progress} logs={logs} />
-      )}
-
-      {status === 'completed' && (
-        <button
-          onClick={() => router.push('/resultados')}
-          className="w-full bg-green-600 text-white py-2.5 rounded font-medium hover:bg-green-700 transition"
-        >
-          Ver Resultado
-        </button>
       )}
     </div>
   );

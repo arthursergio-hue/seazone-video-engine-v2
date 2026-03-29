@@ -9,6 +9,16 @@ interface RefImage {
   filename: string;
 }
 
+interface PipelineStageResult {
+  order: number;
+  name: string;
+  imageUrl?: string;
+  isOriginal: boolean;
+  status: string;
+  version: number;
+  prompt: string;
+}
+
 interface JobResult {
   jobId?: string;
   apiJobId?: string;
@@ -29,6 +39,9 @@ interface JobResult {
   selectedImage?: { id: string; url: string; filename: string; category: string } | null;
   referenceImageCount?: number;
   referenceImages?: RefImage[];
+  // Pipeline
+  pipelineType?: string;
+  pipelineStages?: PipelineStageResult[];
   // Project
   projectName?: string;
   projectId?: string;
@@ -187,6 +200,54 @@ export default function ResultadosPage() {
           </div>
         )}
       </div>
+
+      {/* Pipeline stages */}
+      {result.pipelineStages && result.pipelineStages.length > 0 && (
+        <div className="bg-gray-900 rounded-lg p-6 space-y-3">
+          <h3 className="text-white font-medium">
+            Estagios do Pipeline
+            {result.pipelineType && (
+              <span className="text-gray-500 text-sm ml-2">({result.pipelineType})</span>
+            )}
+          </h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[...result.pipelineStages]
+              .sort((a, b) => b.order - a.order)
+              .map((stage) => (
+                <div key={stage.order} className="bg-gray-800 rounded-lg overflow-hidden">
+                  <div className="aspect-video bg-gray-700 relative">
+                    {stage.imageUrl ? (
+                      <img src={stage.imageUrl} alt={stage.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-600 text-xs">
+                        Sem imagem
+                      </div>
+                    )}
+                    <div className="absolute top-1 left-1 bg-black/70 text-white text-[9px] px-1.5 py-0.5 rounded">
+                      {stage.order}
+                    </div>
+                    {stage.isOriginal && (
+                      <div className="absolute top-1 right-1 bg-blue-600/80 text-white text-[9px] px-1.5 py-0.5 rounded">
+                        Original
+                      </div>
+                    )}
+                    {!stage.isOriginal && (
+                      <div className="absolute top-1 right-1 bg-purple-600/80 text-white text-[9px] px-1.5 py-0.5 rounded">
+                        IA v{stage.version}
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-2">
+                    <p className="text-white text-xs font-medium">{stage.name}</p>
+                  </div>
+                </div>
+              ))}
+          </div>
+          <p className="text-gray-500 text-xs">
+            Ordem do video: {[...result.pipelineStages].sort((a, b) => b.order - a.order).map((s) => s.name).join(' → ')}
+          </p>
+        </div>
+      )}
 
       {/* Images used */}
       {(result.selectedImage || (result.referenceImages && result.referenceImages.length > 0)) && (
