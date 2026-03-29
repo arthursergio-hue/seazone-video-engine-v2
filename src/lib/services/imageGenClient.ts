@@ -29,16 +29,24 @@ async function falGenerateImage(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const input: any = {
     prompt: params.prompt,
-    num_images: 1,
-    enable_safety_checker: false,
   };
 
-  if (model.supportsImageToImage) {
-    input.image_url = params.imageUrl;
-    input.strength = params.strength;
+  if (model.usesImageUrls) {
+    // Nano Banana models use image_urls (array)
+    input.image_urls = [params.imageUrl];
   } else {
-    // Text-to-image models: embed reference in prompt
+    // Flux models use image_url (singular)
     input.image_url = params.imageUrl;
+  }
+
+  if (model.supportsStrength) {
+    input.strength = params.strength;
+  }
+
+  // Common optional params
+  input.num_images = 1;
+  if (!model.usesImageUrls) {
+    input.enable_safety_checker = false;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

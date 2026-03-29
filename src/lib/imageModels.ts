@@ -4,9 +4,9 @@
 
 export type ImageModelId =
   | 'flux_dev'
-  | 'flux_pro'
-  | 'bananana'
-  | 'flux_schnell';
+  | 'flux_kontext'
+  | 'nano_banana'
+  | 'nano_banana_pro';
 
 export interface ImageModelInfo {
   id: ImageModelId;
@@ -14,6 +14,10 @@ export interface ImageModelInfo {
   falModel: string;
   description: string;
   supportsImageToImage: boolean;
+  /** Nano Banana models use image_urls (array) instead of image_url */
+  usesImageUrls: boolean;
+  /** Some models use strength, others don't */
+  supportsStrength: boolean;
 }
 
 export const IMAGE_MODELS: ImageModelInfo[] = [
@@ -21,29 +25,37 @@ export const IMAGE_MODELS: ImageModelInfo[] = [
     id: 'flux_dev',
     name: 'Flux Dev (img2img)',
     falModel: 'fal-ai/flux/dev/image-to-image',
-    description: 'Flux Dev — boa qualidade, img2img nativo',
+    description: 'Flux Dev — boa qualidade, strength controlavel',
     supportsImageToImage: true,
+    usesImageUrls: false,
+    supportsStrength: true,
   },
   {
-    id: 'flux_pro',
-    name: 'Flux Pro 1.1',
-    falModel: 'fal-ai/flux-pro/v1.1',
-    description: 'Flux Pro — alta qualidade, mais lento',
-    supportsImageToImage: false,
-  },
-  {
-    id: 'bananana',
-    name: 'Bananana (img2img)',
-    falModel: 'fal-ai/bananana',
-    description: 'Bananana — rapido, bom para transformacoes',
+    id: 'flux_kontext',
+    name: 'Flux Kontext Pro',
+    falModel: 'fal-ai/flux-pro/kontext',
+    description: 'Kontext — edicao precisa por instrucao de texto',
     supportsImageToImage: true,
+    usesImageUrls: false,
+    supportsStrength: false,
   },
   {
-    id: 'flux_schnell',
-    name: 'Flux Schnell',
-    falModel: 'fal-ai/flux/schnell',
-    description: 'Flux Schnell — muito rapido, qualidade boa',
-    supportsImageToImage: false,
+    id: 'nano_banana',
+    name: 'Nano Banana 2',
+    falModel: 'fal-ai/nano-banana-2/edit',
+    description: 'Nano Banana 2 — Google, multi-referencia, rapido',
+    supportsImageToImage: true,
+    usesImageUrls: true,
+    supportsStrength: false,
+  },
+  {
+    id: 'nano_banana_pro',
+    name: 'Nano Banana Pro',
+    falModel: 'fal-ai/nano-banana-pro/edit',
+    description: 'Nano Banana Pro — Google, maior qualidade',
+    supportsImageToImage: true,
+    usesImageUrls: true,
+    supportsStrength: false,
   },
 ];
 
