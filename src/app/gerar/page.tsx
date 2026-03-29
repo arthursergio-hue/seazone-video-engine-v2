@@ -20,6 +20,28 @@ import { officialPresets, VideoPreset } from '@/lib/prompts/templates';
 import { loadAllImages, getImageData } from '@/lib/storage';
 import ProviderSelector from '@/components/ProviderSelector';
 
+function compressImage(base64: string, maxWidth = 1024, quality = 0.8): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let { width, height } = img;
+      if (width > maxWidth) {
+        height = (height * maxWidth) / width;
+        width = maxWidth;
+      }
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { resolve(base64); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(base64);
+    img.src = base64;
+  });
+}
+
 function getPresetId(videoType: VideoType, constructionFromFacade: boolean): VideoPreset {
   if (videoType === 'construcao' && constructionFromFacade) return 'construction_from_facade';
   const mapping: Record<VideoType, VideoPreset> = {
@@ -159,13 +181,14 @@ export default function GerarPage() {
         return;
       }
 
-      // Upload to FAL storage to get a public URL
-      setLogs([{ timestamp: new Date().toISOString(), message: 'Enviando imagem para o servidor...', progress: 5 }]);
+      // Compress and upload to FAL storage to get a public URL
+      setLogs([{ timestamp: new Date().toISOString(), message: 'Comprimindo e enviando imagem...', progress: 5 }]);
       try {
+        const compressed = await compressImage(base64Data, 1024, 0.85);
         const uploadRes = await fetch('/api/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: base64Data, filename: selectedImage.filename, category: selectedImage.category }),
+          body: JSON.stringify({ image: compressed, filename: selectedImage.filename, category: selectedImage.category }),
         });
         const uploadData = await uploadRes.json();
         if (uploadData.url && uploadData.url.startsWith('http')) {
