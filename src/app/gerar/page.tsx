@@ -129,12 +129,10 @@ export default function GerarPage() {
     setSelectedImage(bestImage);
   }, [videoType, project, categoryImages, isConstructionFromFacade, loading]);
 
-  const pollCountRef = { current: 0 };
   const pollStartRef = { current: 0 };
 
   const pollStatus = useCallback(async (id: string, apiId?: string) => {
     if (pollStartRef.current === 0) pollStartRef.current = Date.now();
-    pollCountRef.current++;
 
     try {
       let url = `/api/video/status?jobId=${id}`;
@@ -145,6 +143,7 @@ export default function GerarPage() {
       if (data.status === 'completed') {
         setStatus('completed');
         setProgress(100);
+        // Keep existing logs + add completion
         setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: 'Vídeo gerado com sucesso!', progress: 100 }]);
         localStorage.setItem('lastJobResult', JSON.stringify(data));
         setGenerating(false);
@@ -153,19 +152,13 @@ export default function GerarPage() {
         setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: data.logs?.[0]?.message || 'Falha na geração', progress: 0 }]);
         setGenerating(false);
       } else {
-        // Smooth progress: 70% → 95% over time (never reaches 100 until completed)
+        // Smooth progress: 70% → 95% over time
         const elapsed = Date.now() - pollStartRef.current;
-        const maxProcessingTime = 5 * 60 * 1000; // 5 min expected max
-        const processingProgress = Math.min(95, 70 + (25 * elapsed / maxProcessingTime));
-        const roundedProgress = Math.round(processingProgress);
+        const maxTime = 5 * 60 * 1000;
+        const smoothProgress = Math.round(Math.min(95, 70 + (25 * elapsed / maxTime)));
 
         setStatus('processing');
-        setProgress(roundedProgress);
-
-        // Only add log on first poll, not repeated
-        if (pollCountRef.current === 1) {
-          setLogs(prev => [...prev, { timestamp: new Date().toISOString(), message: 'Gerando vídeo com IA...', progress: 70 }]);
-        }
+        setProgress(smoothProgress);
 
         setTimeout(() => pollStatus(id, apiId), 4000);
       }
