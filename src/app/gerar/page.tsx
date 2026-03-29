@@ -144,10 +144,11 @@ export default function GerarPage() {
       ? 'fachada'
       : (videoType === 'unidade' ? 'interior' : videoType);
 
-    // Resolve actual image data from IndexedDB for the API
-    let resolvedImageUrl = imageDataMap[selectedImage.id] || '';
-    if (!resolvedImageUrl || !resolvedImageUrl.startsWith('data:')) {
-      const data = await getImageData(selectedImage.id);
+    // Use the public URL stored in the image object (uploaded to FAL storage)
+    // Fallback to IndexedDB base64 if no public URL
+    let resolvedImageUrl = selectedImage.url;
+    if (!resolvedImageUrl || (!resolvedImageUrl.startsWith('http') && !resolvedImageUrl.startsWith('data:'))) {
+      const data = imageDataMap[selectedImage.id] || await getImageData(selectedImage.id);
       if (data) resolvedImageUrl = data;
     }
 

@@ -33,6 +33,31 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
+// Compress image to max ~1MB for API upload (keeps original for preview)
+function compressImage(base64: string, maxWidth = 1024, quality = 0.8): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let { width, height } = img;
+
+      if (width > maxWidth) {
+        height = (height * maxWidth) / width;
+        width = maxWidth;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { resolve(base64); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(base64);
+    img.src = base64;
+  });
+}
+
 export default function ImageUploader({ categoryImages, imageDataMap, onImagesChange }: Props) {
   const [activeCategory, setActiveCategory] = useState<ImageCategory>('fachada');
   const [uploading, setUploading] = useState(false);
@@ -64,13 +89,30 @@ export default function ImageUploader({ categoryImages, imageDataMap, onImagesCh
         const base64Url = await fileToBase64(file);
         const id = `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-        // Save to IndexedDB
+        // Save base64 to IndexedDB for local preview
         await saveImageData(id, base64Url);
         newDataEntries[id] = base64Url;
 
+        // Upload compressed version to FAL storage for a public URL (used by the API)
+        let publicUrl = id;
+        try {
+          const compressed = await compressImage(base64Url, 1024, 0.85);
+          const uploadRes = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: compressed, filename: file.name, category }),
+          });
+          const uploadData = await uploadRes.json();
+          if (uploadData.url && uploadData.url.startsWith('http')) {
+            publicUrl = uploadData.url;
+          }
+        } catch {
+          // Upload failed — will use base64 fallback
+        }
+
         const img: UploadedImage = {
           id,
-          url: id, // store ID as reference, actual data is in IndexedDB
+          url: publicUrl, // FAL public URL or fallback ID
           category,
           filename: file.name,
         };
