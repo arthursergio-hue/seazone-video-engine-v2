@@ -144,17 +144,43 @@ export default function GerarPage() {
       ? 'fachada'
       : (videoType === 'unidade' ? 'interior' : videoType);
 
-    // Use the public URL stored in the image object (uploaded to FAL storage)
-    // Fallback to IndexedDB base64 if no public URL
+    // Resolve image URL: prefer FAL public URL, fallback to uploading from IndexedDB
     let resolvedImageUrl = selectedImage.url;
-    if (!resolvedImageUrl || (!resolvedImageUrl.startsWith('http') && !resolvedImageUrl.startsWith('data:'))) {
-      const data = imageDataMap[selectedImage.id] || await getImageData(selectedImage.id);
-      if (data) resolvedImageUrl = data;
+
+    if (resolvedImageUrl && resolvedImageUrl.startsWith('http')) {
+      // Already a public URL (uploaded to FAL storage) — good to go
+    } else {
+      // Need to get from IndexedDB and upload to FAL storage
+      const base64Data = imageDataMap[selectedImage.id] || await getImageData(selectedImage.id);
+      if (!base64Data) {
+        setStatus('failed');
+        setLogs([{ timestamp: new Date().toISOString(), message: 'Erro: imagem não encontrada. Faça upload novamente.', progress: 0 }]);
+        setGenerating(false);
+        return;
+      }
+
+      // Upload to FAL storage to get a public URL
+      setLogs([{ timestamp: new Date().toISOString(), message: 'Enviando imagem para o servidor...', progress: 5 }]);
+      try {
+        const uploadRes = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: base64Data, filename: selectedImage.filename, category: selectedImage.category }),
+        });
+        const uploadData = await uploadRes.json();
+        if (uploadData.url && uploadData.url.startsWith('http')) {
+          resolvedImageUrl = uploadData.url;
+        } else {
+          resolvedImageUrl = base64Data; // fallback to base64
+        }
+      } catch {
+        resolvedImageUrl = base64Data; // fallback to base64
+      }
     }
 
     if (!resolvedImageUrl) {
       setStatus('failed');
-      setLogs([{ timestamp: new Date().toISOString(), message: 'Erro: imagem não encontrada. Faça upload novamente.', progress: 0 }]);
+      setLogs([{ timestamp: new Date().toISOString(), message: 'Erro: não foi possível processar a imagem.', progress: 0 }]);
       setGenerating(false);
       return;
     }
